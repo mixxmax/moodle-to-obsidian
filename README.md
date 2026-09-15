@@ -1,9 +1,15 @@
 # Moodle → Obsidian
 
+<p align="center">
+  <img src="docs/hero.gif" alt="Moodle course files sync into an organized Obsidian vault" width="100%" />
+</p>
+
+<p align="center"><em>Moodle 课件云 → 精确镜像（只增不删）→ Obsidian 知识库</em></p>
+
 把 Moodle 课件按**原生目录结构**同步进 Obsidian vault。  
 承诺：**课程自动落地，结构不乱，更新不漏。系统只组织，不解读。**
 
-本仓库是给 AI agent / 本机脚本用的 **skill 包**（操作手册 + 可执行脚本），不是 Obsidian 插件本体。
+本仓库提供操作手册（`SKILL.md`）+ 本机脚本，方便人或 AI agent 完成配置与同步；不是 Obsidian 插件本体。
 
 ## 谁适合用
 
@@ -143,7 +149,7 @@ references/
 本 skill **不内置** launchd / cron。需要无人值守时，用系统调度器包一层，例如：
 
 ```bash
-python3 /path/to/moodle-to-obsidian-skill/scripts/mirror.py \
+python3 /path/to/moodle-to-obsidian/scripts/mirror.py \
   --config /path/to/vault/moodle-mirror.json run
 ```
 
