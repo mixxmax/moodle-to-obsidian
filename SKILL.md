@@ -1,11 +1,6 @@
 ---
 name: moodle-to-obsidian
-description: >
-  Sync HKU Moodle course files into an Obsidian vault with exact native folder mirror,
-  per-user login with cookie/token reuse, and docx-to-md companions. Optional:
-  moodle-mcp read-only queries; optional five-principle note structuring (only if user asks).
-  Use when user says Moodle同步到Obsidian, moodle mirror, 课件落库, 伴生md,
-  assignment deadlines grades progress, moodle-mcp briefing, or per-user Moodle login.
+description: "把 Moodle 课件按原生目录结构同步进 Obsidian（拉取+映射、自持登录、docx 伴生）。在用户说 Moodle同步到Obsidian、moodle mirror、课件落库、伴生md 时使用。"
 ---
 
 # Moodle to Obsidian Skill
