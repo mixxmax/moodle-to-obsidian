@@ -1,4 +1,4 @@
-# Moodle → Obsidian
+# Moodle to Obsidian (for HKU)
 
 <p align="center">
   <img src="docs/hero.gif" alt="Moodle course files sync into an organized Obsidian vault" width="100%" />
