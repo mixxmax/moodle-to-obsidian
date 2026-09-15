@@ -9,8 +9,8 @@
   "pull_retries": 3,
   "pull_retry_seconds": 30,
   "mappings": {
-    "PCLL8010": "Civil Litigation (PCLL8010)",
-    "PCLL8050": "Criminal Litigation (PCLL8050)"
+    "LAWS1234": "Example Course A (LAWS1234)",
+    "COMP1234": "Example Course B (COMP1234)"
   },
-  "_comment": "COPY THIS FILE TO YOUR VAULT ROOT as moodle-mirror.json (paths above resolve from the vault root). It is the MIRROR config only. The DOWNLOAD config is separate: moodle-sync/config.json belongs to moodle-dl (keys: moodle_domain, moodle_path, download_course_ids, token) and is created by 'moodle-dl --init'. save_token.py writes the token there. Leave downloader empty for sync-only mode (no pull, mirror existing snapshot only)."
+  "_comment": "COPY THIS FILE TO YOUR VAULT ROOT as moodle-mirror.json (paths above resolve from the vault root). It is the MIRROR config only. Replace the example mappings with your course codes → vault folder names. The DOWNLOAD config is separate: moodle-sync/config.json belongs to moodle-dl (keys: moodle_domain, moodle_path, download_course_ids, token) and is created by 'moodle-dl --init'. save_token.py writes the token there. Leave downloader empty for sync-only mode (no pull, mirror existing snapshot only)."
 }

@@ -16,7 +16,7 @@ Usage:
   python3 mcp_query.py --config moodle-sync/config.json grades --course-id 12345
   python3 mcp_query.py --config moodle-sync/config.json briefing --mcp-dir /path/to/moodle-mcp
 """
-import argparse, json, os, sys
+import argparse, json, os, re, sys
 from pathlib import Path
 
 TOOLS_NOARG = {"deadlines": "get_upcoming_deadlines", "overdue": "get_overdue_assignments",
@@ -38,6 +38,28 @@ def _env(cfg: dict) -> tuple[str, str]:
     if not path.startswith("/"): path = "/" + path
     if not path.endswith("/"): path += "/"
     return f"https://{domain}{path}webservice/rest/server.php", str(cfg.get("token", ""))
+
+def _redact_text(s: str, token: str) -> str:
+    out = s
+    if token and len(token) >= 8:
+        out = out.replace(token, "[REDACTED]")
+    # common key=value leaks
+    out = re.sub(r"(?i)((?:token|wstoken|password|cookie|privatetoken)[=:]\s*)([^\s,&\"']+)",
+                 r"\1[REDACTED]", out)
+    return out
+
+def _redact_obj(obj, token: str):
+    if isinstance(obj, dict):
+        return {
+            k: ("[REDACTED]" if str(k).lower() in {"token", "wstoken", "password", "cookie", "privatetoken", "moodle_token"}
+                else _redact_obj(v, token))
+            for k, v in obj.items()
+        }
+    if isinstance(obj, list):
+        return [_redact_obj(x, token) for x in obj]
+    if isinstance(obj, str):
+        return _redact_text(obj, token)
+    return obj
 
 def main() -> int:
     ap = argparse.ArgumentParser()
@@ -89,8 +111,10 @@ def main() -> int:
         else:
             res = fn()
     except Exception as e:
-        print(f"moodle API call failed: {type(e).__name__}: {str(e)[:200]}", file=sys.stderr); return 1
-    print(json.dumps(res, ensure_ascii=False, indent=2, default=str))
+        msg = _redact_text(f"{type(e).__name__}: {str(e)[:200]}", token)
+        print(f"moodle API call failed: {msg}", file=sys.stderr); return 1
+    safe = _redact_obj(res, token)
+    print(json.dumps(safe, ensure_ascii=False, indent=2, default=str))
     return 0
 
 if __name__ == "__main__":

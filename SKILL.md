@@ -46,8 +46,8 @@ Defaults: `vault_root` = current Obsidian vault; `source_root` = `<vault>/moodle
 
 Never use anyone else's token. Each user owns `moodle-sync/config.json` (`chmod 600`).
 
-1. Mirror config: copy `config.template.json` → `<vault>/moodle-mirror.json`, fill `mappings` (course code → vault folder). Set `downloader` to your moodle-dl path (or empty for sync-only mode).
-2. Download config: inside `moodle-sync/`, run `moodle-dl --init` (sets `moodle_domain`, `download_course_ids`). Course IDs come from the Moodle course page URL or `mcp_query.py courses`.
+1. Mirror config: copy `config.template.json` → `<vault>/moodle-mirror.json`, fill `mappings` (course code → vault folder; replace the example entries). Set `downloader` to your moodle-dl path (or empty for sync-only mode).
+2. Download config: `mkdir -p moodle-sync && cd moodle-sync && moodle-dl --init` (creates the dir if missing; sets `moodle_domain`, `download_course_ids`). Course IDs come from the Moodle course page URL or `mcp_query.py courses`.
 3. Get token via controlled browser (HKU is CAS-only, password API fails):
    login Moodle → visit `https://<domain>/admin/tool/mobile/launch.php?service=moodle_mobile_app&passport=12345&urlscheme=moodledl` → browser shows `ERR_ABORTED` = success → read `moodledl://token=<base64>` from Network → run:
    `python3 scripts/save_token.py --config moodle-sync/config.json --url 'moodledl://token=...'`

@@ -49,6 +49,21 @@ def _rp(base: Path, v: str, f: str) -> Path:
     if not isinstance(v, str) or not v.strip(): raise ConfigError(f"{f} must be non-empty")
     p = Path(v).expanduser(); return p if p.is_absolute() else (base / p).resolve()
 
+def _rel_name(value, field: str, *, single: bool = False) -> str:
+    """Vault-relative name: no absolute, no '.'/'..' components."""
+    if not isinstance(value, str) or not value.strip():
+        raise ConfigError(f"{field} must be a non-empty relative path")
+    path = Path(value.strip())
+    if path.is_absolute() or not path.parts or any(p in (".", "..") for p in path.parts):
+        raise ConfigError(f"{field} must stay inside the configured vault")
+    if single and len(path.parts) != 1:
+        raise ConfigError(f"{field} must be a single path component")
+    return path.as_posix()
+
+def _overlaps(a: Path, b: Path) -> bool:
+    ar, br = a.resolve(), b.resolve()
+    return ar == br or ar in br.parents or br in ar.parents
+
 def load_config(path) -> Config:
     cp = Path(path).expanduser().resolve()
     try: raw = json.loads(cp.read_text(encoding="utf-8"))
@@ -61,22 +76,38 @@ def load_config(path) -> Config:
     mp = raw.get("mappings")
     if not isinstance(mp, dict) or not mp: raise ConfigError("mappings must be non-empty object")
     seen: dict[str, str] = {}
+    clean_mp: dict[str, str] = {}
     for k, v in mp.items():
-        if not isinstance(v, str) or not v.strip() or Path(v).is_absolute() or ".." in Path(v).parts:
+        if not isinstance(v, str) or not v.strip():
             raise ConfigError(f"bad destination for {k}: must be vault-relative")
-        key = v.strip().casefold()
+        dest_rel = _rel_name(v, f"destination for {k}")
+        dest_dir = (vault / dest_rel).resolve()
+        # Resolved path so "./Example" and "Example" (and symlinks) collide
+        key = dest_dir.as_posix().casefold()
         if key in seen:
-            raise ConfigError(f"destinations of {k} and {seen[key]} collide: {v.strip()} (two courses must not share one folder)")
+            raise ConfigError(
+                f"destinations of {k} and {seen[key]} collide: {dest_rel} "
+                f"(two courses must not share one folder)"
+            )
         seen[key] = str(k)
-        dest_dir = vault / v.strip()
-        if dest_dir == src or src in dest_dir.parents or dest_dir in src.parents:
+        if _overlaps(dest_dir, src):
             raise ConfigError(f"destination for {k} must not overlap source_root")
+        if not _within(vault, dest_dir):
+            raise ConfigError(f"destination for {k} must stay inside vault_root")
+        clean_mp[str(k)] = dest_rel
+    mirror_folder = _rel_name(raw.get("mirror_folder", "99 Moodle Mirror"), "mirror_folder")
+    index_filename = _rel_name(
+        raw.get("index_filename", "Moodle Mirror Index.md"), "index_filename", single=True
+    )
+    for code, dest_rel in clean_mp.items():
+        mroot = (vault / dest_rel / mirror_folder).resolve()
+        if not _within(vault / dest_rel, mroot):
+            raise ConfigError(f"mirror_folder escapes course destination for {code}")
+        if _overlaps(mroot, src):
+            raise ConfigError(f"mirror root for {code} must not overlap source_root")
     dl = _rp(base, raw["downloader"], "downloader") if raw.get("downloader") else None
-    return Config(src, vault, state, log, dict(mp),
-        raw.get("mirror_folder", "99 Moodle Mirror"),
-        raw.get("index_filename", "Moodle Mirror Index.md"),
-        dl, int(raw.get("pull_retries", 3)), int(raw.get("pull_retry_seconds", 30)))
-
+    return Config(src, vault, state, log, clean_mp, mirror_folder, index_filename,
+                  dl, int(raw.get("pull_retries", 3)), int(raw.get("pull_retry_seconds", 30)))
 def _code(name: str):
     m = CODE_RE.search(name); return m.group(1) if m else None
 
@@ -169,8 +200,20 @@ def synchronize(cfg: Config) -> SyncResult:
             if dest_name is None:
                 res.unmapped_courses.append(src_course.name); continue
             res.scanned_courses.append(code)
-            course_root = cfg.vault_root / dest_name; course_root.mkdir(parents=True, exist_ok=True)
-            mroot = course_root / cfg.mirror_folder; mroot.mkdir(parents=True, exist_ok=True)
+            course_root = (cfg.vault_root / dest_name).resolve()
+            if not _within(cfg.vault_root, course_root):
+                raise RuntimeError(f"course destination escapes vault: {dest_name}")
+            if _overlaps(course_root, cfg.source_root):
+                raise RuntimeError(f"course destination overlaps source_root: {dest_name}")
+            course_root.mkdir(parents=True, exist_ok=True)
+            mroot = (course_root / cfg.mirror_folder).resolve()
+            if not _within(course_root, mroot):
+                raise RuntimeError("mirror folder escapes course destination")
+            if _overlaps(mroot, cfg.source_root):
+                raise RuntimeError("mirror root must not overlap source_root")
+            if mroot.exists() and mroot.is_symlink():
+                raise RuntimeError("mirror folder must not be a symbolic link")
+            mroot.mkdir(parents=True, exist_ok=True)
             prev = courses.get(code, {}).get("files", {}); nxt: dict = {}
             srcs = sorted((x for x in src_course.rglob("*") if x.is_file() and not x.is_symlink()
                            and x.name not in CONTROL_FILES),

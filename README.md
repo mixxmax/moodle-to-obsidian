@@ -202,6 +202,15 @@ python3 scripts/to_markdown.py "<vault>/<Course Folder>"
         └── ...
 ```
 
+两份配置**不要合并**：
+
+| 文件 | 所有者 | 关键键 |
+|---|---|---|
+| `<vault>/moodle-mirror.json`（从 `config.template.json` 复制） | `scripts/mirror.py` | `source_root`, `vault_root`, `mappings`, `downloader`, `mirror_folder` |
+| `<vault>/moodle-sync/config.json`（`chmod 600`） | `moodle-dl` | `moodle_domain`, `moodle_path`, `download_course_ids`, `token` |
+
+首次初始化请先 `mkdir -p <vault>/moodle-sync`，再在该目录运行 `moodle-dl --init`。
+
 ---
 
 ## 常用命令速查表
