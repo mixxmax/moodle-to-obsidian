@@ -13,9 +13,10 @@
   <img src="https://img.shields.io/badge/Platform-macOS%20%7C%20Linux-lightgrey.svg" alt="Platform">
 </p>
 
-把 Moodle 上的课件，按原来的文件夹样子，原样镜像放进你的 Obsidian 库；需要时还能通过 MCP 只读查询作业截止日期、最新成绩与每日学期简报。
+把 Moodle 上的课件，按原来的文件夹样子，原样镜像放进你的 Obsidian 库。  
+系统**只负责搬运和组织**，不替你总结重点、不篡改你的个人笔记。
 
-系统**只负责搬运、组织和查询**，不替你总结重点、不篡改你的个人笔记。
+需要查作业 ddl / 成绩 / 简报时，可**可选对接**开源项目 [loyaniu/moodle-mcp](https://github.com/loyaniu/moodle-mcp)（共用同一登录，本仓库只提供薄封装，不是自研 MCP 服务）。
 
 目前登录流程以 **HKU Moodle（CAS 统一身份认证）** 深度验证过；其它高校只要支持 Moodle 移动端 token 或 `moodle-dl`，课件镜像与伴生层同样通用可用。
 
@@ -41,8 +42,9 @@
          ┌─────────┴───────────────┬────────────────────────┐
          ▼                         ▼                        ▼
  ┌───────────────┐         ┌───────────────┐        ┌───────────────┐
- │ 伴生 Markdown │         │  moodle-mcp   │        │  五原则凝结   │
- │ docx/pptx可搜 │         │ ddl/成绩/简报 │        │ 第一性/控制论 │
+ │ 伴生 Markdown │         │ 可选：对接    │        │  五原则凝结   │
+ │ docx/pptx可搜 │         │ loyaniu/      │        │ 第一性/控制论 │
+ │               │         │ moodle-mcp    │        │               │
  └───────────────┘         └───────────────┘        └───────────────┘
 ```
 
@@ -86,8 +88,8 @@ python3 scripts/to_markdown.py "/path/to/your/vault/<Course Folder>"
 | **② 映射进 Obsidian** | 把下载树原样放进各课 `99 Moodle Mirror/` | 系统自动完成（可完全离线） | `python3 scripts/mirror.py sync` |
 | **①+② 完整同步** | 先联网拉取最新更新，再立即镜像映射进库 | 一键完成 | `python3 scripts/mirror.py run` |
 | **伴生 Markdown** | docx 必转结构化 md；pdf 不动；pptx 抽文字与备注 | 按需运行 | `python3 scripts/to_markdown.py` |
-| **进度层（moodle-mcp）** | 智能查作业、ddl、逾期、成绩、学期每日 briefing | 按需调用，只读非常驻 | `python3 scripts/mcp_query.py` |
-| **五原则知识凝结** | 镜像就绪后，基于第一性原理与控制论整理高分笔记 | 需你确认后再写入 | 通用五原则方法论 |
+| **五原则知识凝结** | 镜像就绪后，基于第一性原理与控制论整理笔记 | 需你确认后再写入 | 通用五原则方法论 |
+| **可选：moodle-mcp** | 对接上游只读查 ddl / 成绩 / briefing（非本仓库自研） | 需另装上游；未装不影响①② | `scripts/mcp_query.py` 薄封装 |
 
 ---
 
@@ -111,42 +113,29 @@ python3 scripts/to_markdown.py "/path/to/your/vault/<Course Folder>"
 | ① 从 Moodle 增量下载课件至本机缓存 | **系统** |
 | ② 按原结构映射进 Obsidian，生成更新日志与文件索引 | **系统** |
 | 决定本次只要①、只要②，还是一体运行 | **你**（或吩咐 AI Agent） |
-| 按需查询 ddl / 成绩 / 每日学期简报（moodle-mcp） | **系统**只读查询并呈现 |
 | 整理后的知识凝结笔记是否写入 Vault | **你确认后**系统才写入 |
+| （可选）查 ddl / 成绩 / 简报 | 若已安装上游 moodle-mcp，由封装脚本只读查询 |
 
 ---
 
-## 进度层：moodle-mcp（作业 / DDL / 成绩 / 每日简报）
+## 可选集成：loyaniu/moodle-mcp
 
-课件落地解决「文件保存在哪」；**moodle-mcp** 解决「这周要交什么作业、成绩更新了没有」。
+**①② 镜像是本产品的主业。** 作业 ddl、成绩、每日 briefing 来自开源上游 [loyaniu/moodle-mcp](https://github.com/loyaniu/moodle-mcp)，本仓库只提供 `scripts/mcp_query.py` 做**同凭证、按需调用**的薄封装——未安装上游时，**不影响拉取与映射**。
 
-它和下载器**共享你已登录的同一份凭证**，无需重复配置账号；**只读调用、按需触发、不常驻后台**。
-
-上游开源项目：[loyaniu/moodle-mcp](https://github.com/loyaniu/moodle-mcp)
-
-### 常用查询指令与效果展示
+- 与下载器共用 `moodle-sync/config.json` 里的 token，不另开账号  
+- 只读、按需、非常驻；结果默认是快照说明，不自动写进 vault  
+- 实跑需本地 checkout 上游，并用其可用的 Python 环境（详见上游文档）
 
 ```bash
-# 1. 查本周所有截止日期（Deadlines）
+# 干跑：确认有 token，不真正请求
 python3 scripts/mcp_query.py --config <vault>/moodle-sync/config.json deadlines
 
-# 2. 生成今日学期综合简报（Daily Briefing）
-python3 scripts/mcp_query.py --config <vault>/moodle-sync/config.json briefing --mcp-dir /path/to/moodle-mcp
+# 实跑：指向本地 moodle-mcp 仓库
+python3 scripts/mcp_query.py --config <vault>/moodle-sync/config.json briefing \
+  --mcp-dir /path/to/moodle-mcp
 ```
 
-**终端输出样例**：
-```text
-[Moodle Daily Briefing]
-• PCLL8010 Civil Litigation:
-  - SG02 Client Interviewing Prep Sheet (Due: in 2 days, 17 Sep 18:00)
-  - 1 new document uploaded: "2. SG2 (Client Documents).pdf"
-• PCLL8050 Criminal Litigation:
-  - No pending assignments. Next Lecture: LG03 Bail Applications.
-```
-
-支持查询工具：`courses` · `assignments` · `deadlines` · `overdue` · `tasks` · `grades` · `progress` · `health` · `announcements` · `events` · `activity` · `dashboard` · `briefing` · `review` · `load`。
-
-详见 [`references/moodle-mcp.md`](references/moodle-mcp.md)。
+工具名与约定见 [`references/moodle-mcp.md`](references/moodle-mcp.md)。
 
 ---
 
@@ -224,8 +213,8 @@ python3 scripts/to_markdown.py "<vault>/<Course Folder>"
 | **仅镜像到库 (仅②)** | `python3 scripts/mirror.py --config <vault>/moodle-mirror.json sync` |
 | **查看上轮更新状态** | `python3 scripts/mirror.py --config <vault>/moodle-mirror.json status` |
 | **生成伴生 Markdown** | `python3 scripts/to_markdown.py "<vault>/<Course Folder>"` |
-| **查询作业截止日 (干跑)** | `python3 scripts/mcp_query.py --config <vault>/moodle-sync/config.json deadlines` |
-| **生成学期每日简报 (实跑)** | `python3 scripts/mcp_query.py --config <vault>/moodle-sync/config.json briefing --mcp-dir /path/to/moodle-mcp` |
+| **（可选）mcp 干跑** | `python3 scripts/mcp_query.py --config <vault>/moodle-sync/config.json deadlines` |
+| **（可选）mcp 实跑** | `… briefing --mcp-dir /path/to/moodle-mcp`（需已安装上游） |
 
 - 登录与 Token 获取指南：[`references/moodle-login.md`](references/moodle-login.md)
 - 常见问题与排障指南：[`references/troubleshooting.md`](references/troubleshooting.md)
@@ -241,8 +230,8 @@ scripts/
   mirror.py              # ①+② 同步与映射核心脚本
   to_markdown.py         # 伴生 Markdown 转换工具
   save_token.py          # 登录凭证安全写入工具（无回显）
-  mcp_query.py           # moodle-mcp 进度层查询桥接工具
-references/              # 登录认证 · 伴生规则 · MCP 规范 · 五原则 · 排障指南
+  mcp_query.py           # 可选：对接 loyaniu/moodle-mcp 的薄封装
+references/              # 登录 · 伴生 · mcp 集成说明 · 五原则 · 排障
 docs/hero.gif            # README 演示头图
 ```
 
