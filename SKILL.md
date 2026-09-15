@@ -1,6 +1,6 @@
 ---
 name: moodle-to-obsidian
-description: "把 Moodle 课件按原生目录结构同步进 Obsidian（拉取+映射、自持登录、docx 伴生）。在用户说 Moodle同步到Obsidian、moodle mirror、课件落库、伴生md 时使用。"
+description: "从 Moodle 拉取/下载课件并按课程文件夹整理，也可单独映射进 Obsidian；拉取与映射是两段可分开的功能（可只拉、只映射，或一起跑）。自持登录。用户说 Moodle同步、课件拉取、映射进Obsidian、伴生md 时使用。"
 ---
 
 # Moodle to Obsidian Skill
