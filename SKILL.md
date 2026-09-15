@@ -2,10 +2,10 @@
 name: moodle-to-obsidian
 description: >
   Sync HKU Moodle course files into an Obsidian vault with exact native folder mirror,
-  per-user login with cookie/token reuse, docx-to-md companions, and universal
-  five-principle condensation. Use when user says Moodle同步到Obsidian, moodle mirror,
-  课件落库, 伴生md, 第一性/控制论/顺向/横向/逆向整理, assignment deadlines grades progress,
-  moodle-mcp briefing, or wants per-user Moodle login setup.
+  per-user login with cookie/token reuse, and docx-to-md companions. Optional:
+  moodle-mcp read-only queries; optional five-principle note structuring (only if user asks).
+  Use when user says Moodle同步到Obsidian, moodle mirror, 课件落库, 伴生md,
+  assignment deadlines grades progress, moodle-mcp briefing, or per-user Moodle login.
 ---
 
 # Moodle to Obsidian Skill
@@ -91,15 +91,16 @@ python3 scripts/mcp_query.py --config moodle-sync/config.json briefing --mcp-dir
 
 Tools: `assignments/deadlines/grades/progress/health/dashboard/briefing/courses/...`. Only on demand, never daemonised. Detail: `references/moodle-mcp.md`.
 
-## Step 6: Condense with universal five principles (separate layer)
+## Step 6 (optional): Advanced note structuring — only if user asks
 
-Only after mirror + companions exist. Read `references/five-principles.md`:
+**Not part of the default sync pipeline.** Skip unless the user explicitly wants
+condensation / five-principles / structured topic cards.
 
-1. 第一性 (irreducible needs) 2. 控制论 (states/gates/feedbacks)
-3. 顺向 (what→flow→deadline) 4. 横向 (couplings + time-shift)
-5. 逆向 (purpose→tool→cost). PCLL8010 notes are one example, not the template.
+If asked: after mirror + companions exist, read `references/five-principles.md`
+(universal labels; rename per subject). Other frameworks are fine too — this is
+one optional method, not required.
 
-Gate: propose patch → user confirms → write; never invent statutes from general knowledge.
+Gate: propose patch → user confirms → write; never invent sources from general knowledge.
 
 ## Step 7: Respond with structured output
 
@@ -107,13 +108,13 @@ Gate: propose patch → user confirms → write; never invent statutes from gene
 2. Companion md converted/skipped/failed counts
 3. (If asked) MCP summary: overdue, due this week, grades changed
 4. Links to per-course `Moodle Mirror Index.md` and changelog
-5. Next action (e.g. confirm condensation patch, fix unmapped course)
+5. Next action (e.g. fix unmapped course; only mention condensation if user asked)
 
 ## Reference Files
 
 - `references/moodle-login.md` — per-user token capture, storage, expiry
 - `references/companion-rules.md` — conversion fidelity + link hygiene
-- `references/five-principles.md` — universal condensation method
+- `references/five-principles.md` — optional note-structuring method (skip unless asked)
 - `references/moodle-mcp.md` — read-only progress queries
 - `references/troubleshooting.md` — lock/permission/duplicate/missing
 - `config.template.json` — mappings + paths, no secrets

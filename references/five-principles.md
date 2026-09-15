@@ -1,29 +1,43 @@
-# Five Principles, Universal Edition (通用五原则)
+# Five Principles — optional note structure (通用五原则)
 
-Condensation layer, AFTER mirror + companions exist. Propose patch → user
-confirms → write. Never invent statutes from general knowledge; only cite the
-batch text and existing vault pages with `[S-...]` codes.
+**Optional advanced layer.** Not part of pull / map / companion sync.  
+Use only when the user asks to organize notes with this framework (or accepts a
+proposal). Skip entirely if they prefer another method or no condensation.
 
-## 1. 第一性原理 First Principles
-Reduce the topic to irreducible needs: 告知 Notice / 界定 Definition /
-证明 Proof / 效率与代价 Cost & Speed. One line each: what breaks if missing.
+Gate: propose patch → user confirms → write. Cite only the current materials and
+existing vault pages; do not invent sources from general knowledge.
 
-## 2. 工程控制论 Cybernetics
-- State vars S1–S5 (e.g. 时效/送达/完结/管理节点/和解 — rename per subject)
-- Irreversible gates G1–G5 (miss = lose or pay heavily)
-- Feedback loops (cost loop / order loop / sanction loop)
+Works across disciplines. Rename the labels below to fit the subject
+(lab protocol, case study, theory chapter, language grammar, etc.).
 
-## 3. 顺向 Vertical
-是什么 → 流程 → 期限. The main trunk a beginner follows top to bottom.
+## 1. 第一性 First principles
 
-## 4. 横向 Horizontal
-Cross-topic couplings + time-shift table (what changes because another
-topic moved; summer freeze / deadline interactions as instances).
+Reduce the topic to irreducible questions: what must be true / defined /
+shown / traded off. One line each: what breaks if that piece is missing.
 
-## 5. 逆向 Reverse
-目的 → 工具 → 代价. Given the goal, which tool, at what price.
+## 2. 控制论 Cybernetics (states & feedback)
 
-## Card skeleton (§0–§5)
-§0 provenance index + §00 Mermaid panorama + §1–§5 above + one-page recall.
-PCLL8010 `[LG04-05] Pleadings` is one worked example, not the template.
-Bilingual pairs keep strict `### X.Y` decimal symmetry so Outline trees mirror.
+- State variables (where you are in the process or argument)
+- Irreversible gates (miss them and cost jumps or the path closes)
+- Feedback loops (how error is detected and corrected)
+
+## 3. 顺向 Vertical spine
+
+What it is → how it proceeds → critical checkpoints / deadlines.  
+The trunk a newcomer can follow top to bottom.
+
+## 4. 横向 Horizontal couplings
+
+Cross-topic links + what shifts when another topic or clock moves
+(dependencies, shared assumptions, schedule interactions).
+
+## 5. 逆向 Reverse from goal
+
+Goal → available tools / methods → cost.  
+Given the aim, which path, at what price.
+
+## Optional card shape
+
+Provenance index → one panorama diagram → §1–§5 above → one-page recall.  
+Any worked example from a specific course is illustration only, not the template.
+If keeping bilingual outlines, keep matching `### X.Y` heading trees.
