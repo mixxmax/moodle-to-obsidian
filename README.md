@@ -1,4 +1,4 @@
-# Moodle → Obsidian (for HKU)
+# Moodle → Obsidian
 
 <p align="center">
   <img src="docs/hero.gif" alt="Moodle course files sync into an organized Obsidian vault" width="100%" />
@@ -82,6 +82,39 @@ python3 scripts/mirror.py --config /path/to/your/vault/moodle-mirror.json run
 # 为各课程生成伴生 Markdown（使 Word/PPT 在 Obsidian 内支持全文搜索）
 python3 scripts/to_markdown.py "/path/to/your/vault/<Course Folder>"
 ```
+
+### 4. 第一次成功后你会看到什么
+
+命令结束时会打印一块「人话小结」（路径 + 下一步），大致如下：
+
+```text
+✅ 本轮：①拉取 + ②映射 — 成功
+📁 缓存（①）：/path/to/vault/moodle-sync
+📁 笔记库根：/path/to/vault
+📁 已进库镜像（②）：
+   - LAWS1234 → /path/to/vault/Example Course A (LAWS1234)/99 Moodle Mirror
+📝 更新记录：/path/to/vault/Moodle Sync Updates.md
+📊 计数：+3 新增 · ~1 更新 · …
+👉 下一步：在 Obsidian 打开各课「99 Moodle Mirror」；若要全文搜 Word/PPT，再说「生成伴生 md」
+```
+
+在 Obsidian 左侧文件树里对照找：
+
+```text
+你的 Vault/
+├── moodle-sync/                 ← ① 拉取缓存（一般不用手改）
+├── Moodle Sync Updates.md       ← 每轮更新日志
+└── <某门课>/
+    └── 99 Moodle Mirror/        ← ② 映射结果（日常打开这里）
+        └── Moodle Mirror Index.md
+```
+
+| 你想做的事 | 下一步怎么说 / 怎么跑 |
+|---|---|
+| 只要更新网上课件 | `run` 或「拉取并同步」 |
+| 缓存已有、只要进库 | `sync` 或「映射进 Obsidian」 |
+| Word/PPT 库内可搜 | 对某课跑 `to_markdown.py` / 「生成伴生 md」 |
+| 看本轮改了啥 | 打开 `Moodle Sync Updates.md` |
 
 ---
 

@@ -97,13 +97,35 @@ one optional method, not required.
 
 Gate: propose patch → user confirms → write; never invent sources from general knowledge.
 
-## Step 7: Respond with structured output
+## Step 7: Respond with structured output (user guidance — required)
 
-1. Synced courses + Added/Updated/Withdrawn/Conflicted counts
-2. Companion md converted/skipped/failed counts
-3. (If asked) MCP summary: overdue, due this week, grades changed
-4. Links to per-course `Moodle Mirror Index.md` and changelog
-5. Next action (e.g. fix unmapped course; only mention condensation if user asked)
+After every `doctor` / `run` / `sync` / companion step, reply in this shape
+(mirror.py already prints a similar block — paraphrase it for the user, do not omit paths):
+
+```text
+✅/❌ 本轮：①拉取 / ②映射 / ①+② / 伴生md / 自检 — 成功或失败
+📁 缓存（①）：<absolute or vault-relative moodle-sync/>
+📁 笔记库根：<vault_root>
+📁 已进库镜像（②）：各课 <Course>/99 Moodle Mirror/ （列出本轮扫到的课）
+📝 更新记录：Moodle Sync Updates.md
+📊 计数：+added · ~updated · restored · withdrawn · conflicted
+👉 下一步：<一条可执行建议>
+```
+
+Next-step picker (use the first that matches):
+
+| 情况 | 👉 下一步 |
+|---|---|
+| pull 失败 / 无 downloader | 修好 token 与 course_ids 再 `run`；或改用 `sync` 只映射 |
+| UNMAPPED 课号 | 写入 `mappings` 后再 `sync` |
+| conflicted > 0 | 打开对应 `*.local-edit.bak` 对比 |
+| 本轮有新增/更新 | 在 Obsidian 打开 `99 Moodle Mirror`；需要可搜再说「生成伴生 md」 |
+| 本轮无变化 | 有新课件再 `run`；只重映缓存则 `sync` |
+| doctor 全 OK | 可 `run`（①+②）或 `sync`（只②） |
+| doctor 失败 | 按 ISSUE 改配置后再 doctor |
+
+Also include when relevant: companion md counts; (only if asked) MCP summary.  
+Do **not** push five-principles / condensation unless the user asked.
 
 ## Reference Files
 

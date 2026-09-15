@@ -264,6 +264,66 @@ def synchronize(cfg: Config) -> SyncResult:
         _atext(cfg.changelog, old_log.rstrip() + "\n" + "\n".join(lines) + "\n")
         return res
 
+def _next_hint(cfg: Config, result: dict | None = None, *, failed: str | None = None) -> str:
+    """One actionable next step for humans / agents."""
+    if failed == "pull":
+        return "先修好 moodle-dl（token / download_course_ids / 网络），再跑 run；或改用 sync 只映射已有缓存"
+    if failed == "no_downloader":
+        return "要拉取：在 moodle-mirror.json 填 downloader，并完成 moodle-sync/config.json；只要映射：改跑 sync"
+    if failed == "config":
+        return "按上方报错改 moodle-mirror.json（路径 / mappings / mirror_folder），再 doctor"
+    if failed == "busy":
+        return "等待当前下载结束；确认无 moodle-dl 进程后再删 running.lock"
+    if result:
+        if result.get("unmapped_courses"):
+            return "把 UNMAPPED 课号写进 mappings，再跑 sync（只需②映射）"
+        if result.get("duplicate_courses"):
+            return "下载树里同课号多文件夹，先理清 moodle-sync 后再 sync"
+        if result.get("conflicted", 0):
+            return "打开对应 *.local-edit.bak 对比本地修改；确认后可继续用 Obsidian 看 99 Moodle Mirror"
+        if result.get("added", 0) or result.get("updated", 0) or result.get("restored", 0):
+            return "在 Obsidian 打开各课「99 Moodle Mirror」；若要全文搜 Word/PPT，再说「生成伴生 md」"
+        return "本轮无文件变化。有新课件时再 run；只要重映缓存则 sync"
+    if not cfg.downloader:
+        return "配置齐全后可 sync（只映射）；若要联网拉取，先填 downloader 再 run"
+    return "可执行 run（①拉取+②映射）或 sync（只②）"
+
+def _print_guide(cfg: Config, *, mode: str, result: dict | None = None, failed: str | None = None) -> None:
+    """Human-facing where/what-next block (same shape for CLI and agents)."""
+    if mode == "run":
+        stage = "①拉取 + ②映射" if not failed else "①拉取（失败，镜像未改）"
+    elif mode == "sync":
+        stage = "②映射"
+    elif mode == "doctor":
+        stage = "自检 doctor"
+    else:
+        stage = mode
+    status = "失败" if failed else "成功"
+    print("")
+    print(f"{'❌' if failed else '✅'} 本轮：{stage} — {status}")
+    print(f"📁 缓存（①）：{cfg.source_root}")
+    print(f"📁 笔记库根：{cfg.vault_root}")
+    print(f"📝 更新记录：{cfg.changelog}")
+    if result and result.get("scanned_courses"):
+        print("📁 已进库镜像（②）：")
+        for code in result["scanned_courses"]:
+            dest = cfg.mappings.get(code)
+            if not dest:
+                continue
+            mroot = cfg.vault_root / dest / cfg.mirror_folder
+            print(f"   - {code} → {mroot}")
+    if result:
+        print(
+            f"📊 计数：+{result.get('added', 0)} 新增 · ~{result.get('updated', 0)} 更新 · "
+            f"{result.get('restored', 0)} 恢复 · {result.get('withdrawn', 0)} 撤回留底 · "
+            f"{result.get('conflicted', 0)} 冲突备份"
+        )
+        for u in result.get("unmapped_courses") or []:
+            print(f"   · UNMAPPED {u}")
+        for d in result.get("duplicate_courses") or []:
+            print(f"   · DUPLICATE {d}")
+    print(f"👉 下一步：{_next_hint(cfg, result, failed=failed)}")
+
 def _doctor(cfg: Config) -> int:
     ok = True
     for good, msg in [(cfg.source_root.is_dir(), f"source_root: {cfg.source_root}"),
@@ -276,6 +336,13 @@ def _doctor(cfg: Config) -> int:
     else: print("OK  downloader: not configured (sync-only mode)")
     busy = (cfg.source_root / "running.lock").exists()
     print(f"{'BUSY' if busy else 'OK'}  download lock")
+    if busy:
+        ok = False
+        _print_guide(cfg, mode="doctor", failed="busy")
+    elif not ok:
+        _print_guide(cfg, mode="doctor", failed="config")
+    else:
+        _print_guide(cfg, mode="doctor")
     return 0 if ok else 2
 
 def _pull(cfg: Config) -> int:
@@ -300,27 +367,48 @@ def main(argv=None) -> int:
     sp.add_parser("doctor"); s = sp.add_parser("status"); s.add_argument("--json", action="store_true")
     sp.add_parser("sync"); sp.add_parser("run")
     a = ap.parse_args(argv)
+    cfg = None
     try:
         cfg = load_config(a.config)
         if a.cmd == "doctor": return _doctor(cfg)
         if a.cmd == "status":
             p = cfg.state_dir / "last-run.json"
-            if not p.exists(): print("no completed sync yet"); return 1
+            if not p.exists():
+                print("no completed sync yet")
+                print(f"📁 缓存（①）：{cfg.source_root}")
+                print(f"📁 笔记库根：{cfg.vault_root}")
+                print(f"👉 下一步：先 run 或 sync 完成首轮同步")
+                return 1
             d = json.loads(p.read_text(encoding="utf-8"))
             print(json.dumps(d, ensure_ascii=False, indent=2) if a.json else
                   f"+{d['added']} added ~{d['updated']} updated, {d['restored']} restored, "
                   f"{d['withdrawn']} withdrawn, {d.get('conflicted',0)} conflicted, "
                   f"{d.get('adopted',0)} adopted, {d['unchanged']} unchanged @ {d['finished_at']}")
+            if not a.json:
+                _print_guide(cfg, mode="sync", result=d)
             return 0
+        mode = "run" if a.cmd == "run" else "sync"
         if a.cmd == "run":
             rc = _pull(cfg)
-            if rc != 0: print("pull failed; mirror unchanged", file=sys.stderr); return rc
+            if rc != 0:
+                print("pull failed; mirror unchanged", file=sys.stderr)
+                fail = "no_downloader" if cfg.downloader is None else "pull"
+                _print_guide(cfg, mode="run", failed=fail)
+                return rc
         r = synchronize(cfg).as_dict()
         print(f"mirror done: +{r['added']} added ~{r['updated']} updated, {r['restored']} restored, "
               f"{r['withdrawn']} withdrawn, {r['conflicted']} conflicted, "
               f"{r['adopted']} adopted, {r['unchanged']} unchanged")
+        _print_guide(cfg, mode=mode, result=r)
         return 0
     except (ConfigError, RuntimeError, OSError) as e:
-        print(f"mirror.py: {e}", file=sys.stderr); return 3 if isinstance(e, SyncBusyError) else 2
+        print(f"mirror.py: {e}", file=sys.stderr)
+        if cfg is not None:
+            fail = "busy" if isinstance(e, SyncBusyError) else "config"
+            _print_guide(cfg, mode=getattr(a, "cmd", "sync"), failed=fail)
+        else:
+            print("👉 下一步：检查 --config 路径与 moodle-mirror.json 是否可读")
+        return 3 if isinstance(e, SyncBusyError) else 2
 
-if __name__ == "__main__": raise SystemExit(main())
+if __name__ == "__main__":
+    raise SystemExit(main())
