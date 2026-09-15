@@ -1,0 +1,34 @@
+# Per-User Moodle Login (HKU)
+
+HKU Moodle is CAS-only: posting your portal password to `/login/token.php`
+returns `invalidlogin`. Use the mobile-app launch flow instead. Each user keeps
+their own token in their own `moodle-sync/config.json` (`chmod 600`).
+
+Two files — do not merge them:
+
+| File | Owner | Purpose |
+|---|---|---|
+| `<vault>/moodle-mirror.json` | mirror (`scripts/mirror.py`) | paths + `mappings` + `downloader` (copy from `config.template.json`) |
+| `moodle-sync/config.json` | moodle-dl | `moodle_domain`, `moodle_path`, `download_course_ids`, `token` |
+
+## Steps
+
+1. `pip install moodle-dl` (or `uv tool install moodle-dl`). Find it: `command -v moodle-dl`.
+2. Mirror config: copy `config.template.json` → `<vault>/moodle-mirror.json`,
+   fill `mappings`, set `downloader` (or empty for sync-only).
+3. Download config: `cd moodle-sync && moodle-dl --init` — sets domain and
+   `download_course_ids` (IDs from the Moodle course URL or `mcp_query.py courses`).
+4. Log in to `https://moodle.hku.hk` in a controlled Chrome you own.
+5. Visit:
+   `https://moodle.hku.hk/admin/tool/mobile/launch.php?service=moodle_mobile_app&passport=12345&urlscheme=moodledl`
+6. Chrome reports `ERR_ABORTED` — this IS the success signal (custom scheme).
+7. Open DevTools → Network, find the `moodledl://token=<base64>` request.
+8. Run (token never printed back):
+   `python3 scripts/save_token.py --config moodle-sync/config.json --url 'moodledl://token=<base64>'`
+9. `python3 scripts/mirror.py --config moodle-mirror.json doctor`
+
+## Rules
+
+- Never paste anyone else's token; never commit either config.
+- Token expiry / password change → repeat steps 4–8.
+- The skill never uploads the token anywhere; MCP reuses the same file.

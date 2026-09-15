@@ -1,0 +1,17 @@
+# Local / generated
+.DS_Store
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Never commit live credentials or vault state
+moodle-mirror.json
+moodle-sync/
+**/config.json
+!.gitkeep
+
+# Internal planning scratch (not part of the skill package)
+findings.md
+progress.md
+task_plan.md
