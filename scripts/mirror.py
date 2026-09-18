@@ -142,6 +142,10 @@ def load_config(path) -> Config:
         raw = json.loads(cp.read_text(encoding="utf-8"))
     except FileNotFoundError as e:
         raise ConfigError(f"config not found: {cp}") from e
+    except ValueError as e:
+        raise ConfigError(f"config is not valid JSON: {cp} ({e})") from e
+    if not isinstance(raw, dict):
+        raise ConfigError(f"config root must be an object: {cp}")
     base = cp.parent
     src = _rp(base, raw.get("source_root", ""), "source_root")
     vault = _rp(base, raw.get("vault_root", ""), "vault_root")
@@ -180,9 +184,16 @@ def load_config(path) -> Config:
             raise ConfigError(f"mirror_folder escapes course destination for {code}")
         if _overlaps(mroot, src):
             raise ConfigError(f"mirror root for {code} must not overlap source_root")
+    try:
+        retries = int(raw.get("pull_retries", 3))
+        retry_secs = int(raw.get("pull_retry_seconds", 30))
+    except (TypeError, ValueError) as e:
+        raise ConfigError("pull_retries / pull_retry_seconds must be integers") from e
+    if retries < 1 or retry_secs < 0:
+        raise ConfigError("pull_retries must be >= 1 and pull_retry_seconds >= 0")
     dl = _rp(base, raw["downloader"], "downloader") if raw.get("downloader") else None
     return Config(src, vault, state, log, clean_mp, mirror_folder, index_filename,
-                  dl, int(raw.get("pull_retries", 3)), int(raw.get("pull_retry_seconds", 30)))
+                  dl, retries, retry_secs)
 def _code(name: str):
     m = CODE_RE.search(name)
     return m.group(1) if m else None
@@ -837,7 +848,12 @@ def main(argv=None) -> int:
             log.info("pull verdict=%s note=%s", verdict, note)
             if verdict == "failed":
                 print("pull failed; mirror unchanged", file=sys.stderr)
-                fail = "no_downloader" if cfg.downloader is None else "pull"
+                if cfg.downloader is None or note == "no_downloader":
+                    fail = "no_downloader"
+                elif "busy" in note:
+                    fail = "busy"
+                else:
+                    fail = "pull"
                 _print_guide(cfg, mode="run", failed=fail)
                 return rc or 1
             if verdict == "unverified":

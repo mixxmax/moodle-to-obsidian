@@ -93,6 +93,25 @@ def test_bad_downloader_path_points_to_doctor(mirror, workdir):
     assert "mappings" not in err  # must not misdirect to mappings
 
 
+def test_corrupt_mirror_config_clean_error(mirror, tmp_path):
+    (tmp_path / "bad.json").write_text("{oops", encoding="utf-8")
+    rc, out, err = run_cli(mirror, "--config", str(tmp_path / "bad.json"), "sync")
+    assert rc == 2
+    assert "Traceback" not in err and "valid JSON" in err
+
+
+def test_noninteger_retries_clean_error(mirror, tmp_path):
+    import json
+    (tmp_path / "v").mkdir()
+    (tmp_path / "c").mkdir()
+    (tmp_path / "v" / "m.json").write_text(json.dumps(
+        {"source_root": "../c", "vault_root": ".", "state_dir": "../s",
+         "mappings": {"X": "Y"}, "pull_retries": "three"}), encoding="utf-8")
+    rc, out, err = run_cli(mirror, "--config", str(tmp_path / "v" / "m.json"), "sync")
+    assert rc == 2
+    assert "Traceback" not in err and "integers" in err
+
+
 def test_dot_destination_names_folder(mirror, workdir):
     cfg = write_config(workdir["vault"] / "moodle-mirror.json",
                        mappings={"COMP1111": "."})

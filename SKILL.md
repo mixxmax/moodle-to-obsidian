@@ -83,7 +83,7 @@ Rules: native tree kept, add/update in place, withdrawn kept and marked, local e
 python3 "<SKILL_DIR>/scripts/to_markdown.py" "<VAULT>/<Course Folder>"
 ```
 
-Rules: one `.md` per source alongside it, frontmatter records source, top links back; docx headings/tables preserved (link-only stub if python-docx missing); pptx per-slide sections always carry a downgrade warning; PDF untouched (Obsidian renders it); link hygiene: label strips `[]`, target percent-encoded. Detail: `references/companion-rules.md`.
+Rules: one `.md` per source alongside it, frontmatter records source, top links back; docx headings/tables preserved (link-only stub if python-docx missing); pptx per-slide sections always carry a downgrade warning; PDF untouched (Obsidian renders it); link hygiene: label strips `[]`, target percent-encoded. Freshness is fingerprint-driven: source changed → auto-update; user-edited → conflict kept (`--force` overwrites with backup); `--dry-run` previews. Detail: `references/companion-rules.md`.
 
 ## Step 5: Optional progress layer via moodle-mcp (read-only)
 
@@ -118,12 +118,12 @@ After every `doctor` / `run` / `sync` / companion step, reply in this shape
 (mirror.py already prints a similar block — paraphrase it for the user, do not omit paths):
 
 ```text
-✅/❌ 本轮：①拉取 / ②映射 / ①+② / 伴生md / 自检 — 成功或失败
+✅/❌/⚠️ 本轮：①拉取 / ②映射 / ①+② / 伴生md / 自检 — 成功、失败或映射成功（拉取未验证）
 📁 缓存（①）：<absolute or vault-relative moodle-sync/>
 📁 笔记库根：<vault_root>
 📁 已进库镜像（②）：各课 <Course>/99 Moodle Mirror/ （列出本轮扫到的课）
 📝 更新记录：Moodle Sync Updates.md
-📊 计数：+added · ~updated · restored · withdrawn · conflicted
+📊 计数：+added · ~updated · restored · withdrawn · conflicted · adopted（已有认领）[· SKIPPED-SYMLINK xN]
 👉 下一步：<一条可执行建议>
 ```
 

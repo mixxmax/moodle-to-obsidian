@@ -272,6 +272,9 @@ python3 "$SKILL_DIR/scripts/to_markdown.py" "$VAULT/<Course Folder>"
 | **仅镜像到库 (仅②)** | `python3 "$SKILL_DIR/scripts/mirror.py" --config "$VAULT/moodle-mirror.json" sync` |
 | **查看上轮更新状态** | `python3 "$SKILL_DIR/scripts/mirror.py" --config "$VAULT/moodle-mirror.json" status` |
 | **生成伴生 Markdown** | `python3 "$SKILL_DIR/scripts/to_markdown.py" "$VAULT/<Course Folder>"` |
+| **伴生预览 / 强制覆盖** | `to_markdown.py … --dry-run` 只报告；`--force` 覆盖用户改过的 md（先备 `.localbak`） |
+| **清理旧冲突备份** | `mirror.py --config … doctor --prune-conflicts 30`（删 30 天前的） |
+| **状态 JSON 限事件数** | `status --json --events 20`（0 = 全部，默认 50） |
 | **（可选）mcp 干跑** | `python3 "$SKILL_DIR/scripts/mcp_query.py" --config "$VAULT/moodle-sync/config.json" deadlines` |
 | **（可选）mcp 实跑** | `… briefing --mcp-dir /path/to/moodle-mcp`（需已安装上游） |
 
