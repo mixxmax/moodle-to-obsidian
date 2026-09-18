@@ -1,11 +1,11 @@
 # Moodle MCP, Read-Only Progress Layer (optional)
 
 Upstream: https://github.com/loyaniu/moodle-mcp. Same user token from
-`moodle-sync/config.json`, no second credential. Never daemonise; call on demand.
+`<SOURCE_ROOT>/config.json`, no second credential. Never daemonise; call on demand.
 
 ## Modes
 
-- Dry-run (default): `python3 "<SKILL_DIR>/scripts/mcp_query.py" --config <VAULT>/moodle-sync/config.json deadlines`
+- Dry-run (default): `python3 "<SKILL_DIR>/scripts/mcp_query.py" --config <SOURCE_ROOT>/config.json deadlines`
   verifies the token exists and prints the exact planned call. Nothing executes.
 - Execute: add `--mcp-dir /path/to/moodle-mcp`. The shim sets `MOODLE_URL` /
   `MOODLE_TOKEN` from your config (redacted on screen), imports

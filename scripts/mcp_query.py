@@ -65,9 +65,17 @@ def _call_with_course_id(fn, course_id):
 
 def _dl_config(path: Path) -> dict:
     try:
-        return json.loads(path.read_text(encoding="utf-8"))
+        raw = json.loads(path.read_text(encoding="utf-8"))
     except FileNotFoundError:
         return {}
+    except (OSError, ValueError) as e:
+        print(f"mcp_query: unreadable config ({type(e).__name__}): {path} — "
+              "fix the JSON or re-run 'moodle-dl --init'", file=sys.stderr)
+        raise SystemExit(2) from e
+    if not isinstance(raw, dict):
+        print(f"mcp_query: config root must be an object: {path}", file=sys.stderr)
+        raise SystemExit(2)
+    return raw
 
 def _env(cfg: dict) -> tuple[str, str]:
     domain = str(cfg.get("moodle_domain", "moodle.hku.hk")).strip().rstrip("/")

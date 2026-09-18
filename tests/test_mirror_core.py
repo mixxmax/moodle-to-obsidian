@@ -42,6 +42,17 @@ def test_local_edit_conflict_shelved_outside_mirror(mirror, workdir):
     assert "conflicts/" in log
 
 
+def test_prune_negative_days_refused(mirror, workdir):
+    cfg = write_config(workdir["vault"] / "moodle-mirror.json")
+    bak = workdir["state"] / "conflicts" / "COMP1111" / "a.pdf.20990101-000000.bak"
+    bak.parent.mkdir(parents=True, exist_ok=True)
+    bak.write_bytes(b"x")
+    rc, out, err = run_cli(mirror, "--config", str(cfg), "doctor", "--prune-conflicts", "-1")
+    assert rc == 2
+    assert bak.exists()
+    assert "DAYS >= 1" in err
+
+
 def test_prune_conflicts_by_age(mirror, workdir):
     import os
     import time
@@ -89,7 +100,8 @@ def test_bad_downloader_path_points_to_doctor(mirror, workdir):
                        downloader="/nonexistent/dl-xyz")
     rc, out, err = run_cli(mirror, "--config", str(cfg), "run")
     assert rc != 0
-    assert "not executable" in err
+    assert "cannot execute downloader" in err
+    assert "检查 moodle-mirror.json 中的 downloader 路径" in out
     assert "mappings" not in err  # must not misdirect to mappings
 
 
@@ -133,6 +145,49 @@ def test_status_json_truncates_events(mirror, workdir):
     rc, out, err = run_cli(mirror, "--config", str(cfg), "status", "--json",
                            "--events", "0")
     assert rc == 0 and "events_truncated" not in json.loads(out)
+
+
+def test_missing_course_marks_incomplete(mirror, workdir):
+    import json
+    import shutil
+    (workdir["cache"] / "COMP2222 Second [2026]").mkdir(parents=True)
+    (workdir["cache"] / "COMP2222 Second [2026]" / "b.pdf").write_bytes(b"B")
+    cfg = write_config(workdir["vault"] / "moodle-mirror.json",
+                       mappings={"COMP1111": "C1", "COMP2222": "C2"})
+    _sync(mirror, cfg)
+    before = json.loads((workdir["state"] / "manifest.json").read_text(encoding="utf-8"))
+    assert "last_successful_sync" in before
+    shutil.rmtree(workdir["cache"] / "COMP2222 Second [2026]")
+    rc, out, err = run_cli(mirror, "--config", str(cfg), "sync")
+    assert rc == 0
+    assert "MISSING-COURSE" in out and "COMP2222" in out
+    assert "不完整" in out  # no green-only success
+    log = (workdir["vault"] / "Log.md").read_text(encoding="utf-8")
+    assert "MISSING-COURSE" in log and "COMP2222" in log
+    after = json.loads((workdir["state"] / "manifest.json").read_text(encoding="utf-8"))
+    assert after.get("last_successful_sync") == before["last_successful_sync"]
+    assert "COMP2222" in after["courses"]  # history kept, not withdrawn
+    assert (workdir["vault"] / "C2" / "99 Moodle Mirror" / "b.pdf").exists()
+    status = json.loads((workdir["state"] / "last-run.json").read_text(encoding="utf-8"))
+    assert status["status"] == "incomplete"
+
+
+def test_broken_index_blocks_before_copy(mirror, workdir):
+    cfg = write_config(workdir["vault"] / "moodle-mirror.json")
+    _sync(mirror, cfg)
+    idx = (workdir["vault"] / "Course COMP1111" / "99 Moodle Mirror"
+           / "Moodle Mirror Index.md")
+    idx.write_text("<!-- MOODLE-LOCAL-SYNC:AUTO:END -->\norphan\n" + idx.read_text(encoding="utf-8"),
+                   encoding="utf-8")
+    (workdir["cache"] / "COMP1111 Week 1 [2026]" / "new.pdf").write_bytes(b"NEW")
+    manifest_before = (workdir["state"] / "manifest.json").read_bytes()
+    log_before = (workdir["vault"] / "Log.md").read_bytes()
+    rc, out, err = run_cli(mirror, "--config", str(cfg), "sync")
+    assert rc == 2
+    assert "Traceback" not in err
+    assert not (workdir["vault"] / "Course COMP1111" / "99 Moodle Mirror" / "new.pdf").exists()
+    assert (workdir["state"] / "manifest.json").read_bytes() == manifest_before
+    assert (workdir["vault"] / "Log.md").read_bytes() == log_before
 
 
 def test_handwritten_index_section_survives(mirror, workdir):

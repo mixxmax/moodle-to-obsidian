@@ -101,11 +101,21 @@ class SyncResult:
     duplicate_courses: list = field(default_factory=list)
     missing_courses: list = field(default_factory=list)
     skipped_symlinks: int = 0
+    recovered: bool = False
+    incomplete: bool = False
+    pull_verdict: str = "n/a"
     events: list = field(default_factory=list)
 
     def as_dict(self):
         d = asdict(self)
-        d["status"] = "success"
+        if self.incomplete:
+            d["status"] = "incomplete"
+        elif self.recovered:
+            d["status"] = "recovered"
+        elif self.pull_verdict == "unverified":
+            d["status"] = "unverified"
+        else:
+            d["status"] = "success"
         return d
 
 
@@ -352,7 +362,32 @@ def _manifest(p: Path):
             "be adopted, never deleted.")
     return m, None
 
-def synchronize(cfg: Config) -> SyncResult:
+def _check_indexes(cfg: Config, codes) -> None:
+    """Pre-flight: validate AUTO markers of every index about to be rewritten.
+
+    Runs BEFORE any file is copied so a broken index aborts the run with
+    mirror, manifest and changelog all untouched."""
+    for code in codes:
+        dest = cfg.mappings.get(code)
+        if dest is None:
+            continue
+        idx = cfg.vault_root / dest / cfg.mirror_folder / cfg.index_filename
+        if not idx.exists():
+            continue
+        try:
+            txt = idx.read_text(encoding="utf-8")
+        except OSError as e:
+            raise MirrorStateError(f"cannot read index {idx}: {e}") from e
+        starts, ends = txt.count(AUTO_START), txt.count(AUTO_END)
+        if (starts, ends) != (1, 1):
+            raise MirrorStateError(
+                f"index markers broken in {idx} (START x{starts}, END x{ends}, "
+                "want 1 each). Nothing in this run was changed: no mirror files "
+                "copied, manifest and changelog untouched. Remove the extra AUTO "
+                "block (keep handwritten notes), then re-run sync.")
+
+
+def synchronize(cfg: Config, pull_verdict: str = "n/a") -> SyncResult:
     if not cfg.source_root.is_dir():
         raise MirrorEnvError(f"source_root missing: {cfg.source_root}")
     if not cfg.vault_root.is_dir():
@@ -362,8 +397,9 @@ def synchronize(cfg: Config) -> SyncResult:
     with _lock(cfg.state_dir):
         mp, reset_note = _manifest(cfg.state_dir / "manifest.json")
         courses = mp["courses"]
-        res = SyncResult(started_at=_now())
+        res = SyncResult(started_at=_now(), pull_verdict=pull_verdict)
         if reset_note:
+            res.recovered = True
             print(f"⚠️ {reset_note}", file=sys.stderr)
         by_code: dict[str, list[Path]] = {}
         for it in sorted(cfg.source_root.iterdir(), key=lambda x: x.name.casefold()):
@@ -371,6 +407,8 @@ def synchronize(cfg: Config) -> SyncResult:
                 c = _code(it.name)
                 if c:
                     by_code.setdefault(c, []).append(it)
+        _check_indexes(cfg, [c for c in by_code
+                             if len(by_code[c]) == 1 and c in cfg.mappings])
         for code in sorted(by_code):
             if len(by_code[code]) > 1:
                 res.duplicate_courses.append(code)
@@ -468,8 +506,14 @@ def synchronize(cfg: Config) -> SyncResult:
         for code in sorted(courses):
             if code not in by_code:
                 res.missing_courses.append(code)
+                res.incomplete = True
         res.finished_at = _now()
-        mp["last_successful_sync"] = res.finished_at
+        summary = res.as_dict()
+        # last_successful_sync means "last fully-verified incremental sync".
+        # Incomplete / recovered / unverified runs write manifest + last-run
+        # (with their honest status) but must NOT advance the stamp.
+        if summary["status"] == "success":
+            mp["last_successful_sync"] = res.finished_at
         if reset_note:
             res.events.append({"type": "note", "course": "-", "path": reset_note})
         lines = [f"\n## Sync {res.finished_at}",
@@ -491,6 +535,12 @@ def synchronize(cfg: Config) -> SyncResult:
             lines.append(f"- UNMAPPED {u}")
         for d_ in res.duplicate_courses:
             lines.append(f"- DUPLICATE {d_} (skipped)")
+        for m in res.missing_courses:
+            lines.append(f"- MISSING-COURSE `{m}` (source folder vanished; "
+                         "local mirror retained, NOT withdrawn)")
+        if summary["status"] != "success":
+            lines.append(f"- run status: {summary['status']} (not a verified incremental "
+                         "sync; last_successful_sync untouched)")
         _atext(cfg.state_dir / "manifest.json", json.dumps(mp, ensure_ascii=False, indent=2) + "\n")
         _atext(cfg.state_dir / "last-run.json", json.dumps(res.as_dict(), ensure_ascii=False, indent=2) + "\n")
         old_log = cfg.changelog.read_text(encoding="utf-8") if cfg.changelog.exists() else "# Moodle Sync Updates\n"
@@ -503,6 +553,8 @@ def _next_hint(cfg: Config, result: dict | None = None, *, failed: str | None = 
         return "先修好 moodle-dl（token / download_course_ids / 网络），再跑 run；或改用 sync 只映射已有缓存"
     if failed == "no_downloader":
         return "要拉取：在 moodle-mirror.json 填 downloader，并完成 moodle-sync/config.json；只要映射：改跑 sync"
+    if failed == "downloader_not_found":
+        return "检查 moodle-mirror.json 中的 downloader 路径是否存在可执行，然后重新运行 doctor"
     if failed == "config":
         return "按上方报错改 moodle-mirror.json（路径 / mappings / mirror_folder），再 doctor"
     if failed == "state":
@@ -512,6 +564,9 @@ def _next_hint(cfg: Config, result: dict | None = None, *, failed: str | None = 
     if failed == "busy":
         return "等待当前下载结束；确认无 moodle-dl 进程后再删 running.lock"
     if result:
+        if result.get("missing_courses"):
+            return ("源课程目录消失（下载不完整或已撤课）：先检查 moodle-sync 下该课文件夹，"
+                    "确认后重跑 run 补拉；本地镜像已保留，未标撤回")
         if result.get("unmapped_courses"):
             return "把 UNMAPPED 课号写进 mappings，再跑 sync（只需②映射）"
         if result.get("duplicate_courses"):
@@ -529,22 +584,41 @@ def _next_hint(cfg: Config, result: dict | None = None, *, failed: str | None = 
 def _print_guide(cfg: Config, *, mode: str, result: dict | None = None, failed: str | None = None,
                  pull_note: str | None = None) -> None:
     """Human-facing where/what-next block (same shape for CLI and agents)."""
+    run_state = (result or {}).get("status", "success")
     if mode == "run":
         if failed:
             stage = "①拉取（失败，镜像未改）"
-        elif pull_note:
+        elif pull_note or run_state == "unverified":
             stage = "①拉取（完整性未验证）+ ②映射"
+        elif run_state == "incomplete":
+            stage = "①拉取 + ②映射（部分课程缺失）"
+        elif run_state == "recovered":
+            stage = "①拉取 + ②映射（历史重建）"
         else:
             stage = "①拉取 + ②映射"
     elif mode == "sync":
-        stage = "②映射"
+        if run_state == "incomplete":
+            stage = "②映射（部分课程缺失）"
+        elif run_state == "recovered":
+            stage = "②映射（历史重建）"
+        else:
+            stage = "②映射"
     elif mode == "doctor":
         stage = "自检 doctor"
     else:
         stage = mode
-    status = "失败" if failed else ("映射成功（拉取未验证）" if pull_note else "成功")
+    if failed:
+        status, icon = "失败", "❌"
+    elif pull_note or run_state == "unverified":
+        status, icon = "映射成功（拉取未验证）", "⚠️"
+    elif run_state == "incomplete":
+        status, icon = "映射不完整", "⚠️"
+    elif run_state == "recovered":
+        status, icon = "映射成功（历史为新基线）", "⚠️"
+    else:
+        status, icon = "成功", "✅"
     print("")
-    print(f"{'❌' if failed else ('⚠️' if pull_note else '✅')} 本轮：{stage} — {status}")
+    print(f"{icon} 本轮：{stage} — {status}")
     print(f"📁 缓存（①）：{cfg.source_root}")
     print(f"📁 笔记库根：{cfg.vault_root}")
     print(f"📝 更新记录：{cfg.changelog}")
@@ -571,6 +645,9 @@ def _print_guide(cfg: Config, *, mode: str, result: dict | None = None, failed: 
         if result.get("skipped_symlinks", 0):
             print(f"   · SKIPPED-SYMLINK x{result['skipped_symlinks']} "
                   "(symlink 未跟随，详情见更新记录)")
+        for m in result.get("missing_courses") or []:
+            print(f"   · MISSING-COURSE {m} "
+                  "(源课程消失；本地镜像保留，未标撤回)")
     print(f"👉 下一步：{_next_hint(cfg, result, failed=failed)}")
 
 def _redact(text: str) -> str:
@@ -607,7 +684,7 @@ def _dl_config_status(cfg: Config) -> tuple[bool, list[str]]:
     if not isinstance(raw, dict):
         return False, [f"config root must be an object: {p}"]
     reasons = []
-    for key in ("moodle_domain", "download_course_ids", "token"):
+    for key in ("moodle_domain", "moodle_path", "download_course_ids", "token"):
         if not raw.get(key):
             reasons.append(f"empty {key} in {p}")
     if raw.get("download_also_with_cookie") and not raw.get("privatetoken"):
@@ -623,6 +700,9 @@ def _dl_config_status(cfg: Config) -> tuple[bool, list[str]]:
 
 def _prune_conflicts(state_dir: Path, days: int) -> tuple[int, int]:
     """Delete conflict backups older than DAYS. Returns (removed, kept)."""
+    if days < 1:
+        raise ConfigError("--prune-conflicts needs DAYS >= 1 "
+                          f"(got {days}; refusing to wipe recent backups)")
     root = state_dir / CONFLICTS_DIRNAME
     if not root.is_dir():
         return 0, 0
@@ -729,7 +809,7 @@ def _pull(cfg: Config) -> tuple[int, str, str]:
                                capture_output=True, text=True, timeout=600)
         except (OSError, subprocess.SubprocessError) as e:
             print(f"mirror.py: cannot execute downloader: {e}", file=sys.stderr)
-            return 3, "failed", "downloader not executable"
+            return 3, "failed", "downloader_not_found"
         output = _ANSI_RE.sub("", (c.stdout or "") + (c.stderr or ""))
         output = _redact(output)
         if output.strip():
@@ -843,6 +923,7 @@ def main(argv=None) -> int:
             return _status_body(cfg, a)
         mode = "run" if a.cmd == "run" else "sync"
         pull_note = None
+        verdict = "n/a"
         if a.cmd == "run":
             rc, verdict, note = _pull(cfg)
             log.info("pull verdict=%s note=%s", verdict, note)
@@ -852,6 +933,8 @@ def main(argv=None) -> int:
                     fail = "no_downloader"
                 elif "busy" in note:
                     fail = "busy"
+                elif "downloader_not_found" in note:
+                    fail = "downloader_not_found"
                 else:
                     fail = "pull"
                 _print_guide(cfg, mode="run", failed=fail)
@@ -860,7 +943,7 @@ def main(argv=None) -> int:
                 pull_note = note
                 print(f"⚠️ pull ran but completeness UNVERIFIED: {note}; "
                       "mirror proceeds, verify new files on Moodle manually.", file=sys.stderr)
-        r = synchronize(cfg).as_dict()
+        r = synchronize(cfg, pull_verdict=verdict).as_dict()
         log.info("sync done: added=%s updated=%s restored=%s withdrawn=%s conflicted=%s "
                  "adopted=%s unchanged=%s skipped_symlinks=%s",
                  r["added"], r["updated"], r["restored"], r["withdrawn"],

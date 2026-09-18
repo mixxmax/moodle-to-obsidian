@@ -61,12 +61,14 @@
 ```bash
 git clone https://github.com/mixxmax/moodle-to-obsidian <SKILL_DIR>
 export SKILL_DIR=/path/to/moodle-to-obsidian VAULT=/path/to/your/vault
+# 下载缓存目录（moodle-dl 的工作区；默认放 vault 内，可指向 vault 外）：
+export SOURCE_ROOT="$VAULT/moodle-sync"
 ```
-以下命令里的 `$SKILL_DIR` / `$VAULT` 就指这两个。
+以下命令里的 `$SKILL_DIR` / `$VAULT` / `$SOURCE_ROOT` 就指这三个。
 
 ### 1. 安装核心依赖
 ```bash
-pip install -r requirements.txt  # moodle-dl + python-docx + python-pptx（已钉版本范围）
+pip install -r "$SKILL_DIR/requirements.txt"  # moodle-dl + python-docx + python-pptx（已钉版本范围）
 ```
 
 ### 2. 初始化配置与浏览器一次性登录
@@ -75,7 +77,7 @@ pip install -r requirements.txt  # moodle-dl + python-docx + python-pptx（已�
 cp "$SKILL_DIR/config.template.json" "$VAULT/moodle-mirror.json"
 
 # 在浏览器中登录 Moodle 完成 CAS 认证后保存 Token（以 HKU 为例）
-python3 "$SKILL_DIR/scripts/save_token.py" --config "$VAULT/moodle-sync/config.json" --url 'moodledl://token=...'
+python3 "$SKILL_DIR/scripts/save_token.py" --config "$SOURCE_ROOT/config.json" --url 'moodledl://token=...'
 
 # 自检环境配置与路径连通性（另报告 run READY / NOT READY）
 python3 "$SKILL_DIR/scripts/mirror.py" --config "$VAULT/moodle-mirror.json" doctor
@@ -131,9 +133,9 @@ python3 "$SKILL_DIR/scripts/to_markdown.py" "$VAULT/<Course Folder>"
 | 能力 | 一句话说明 | 要不要你盯着 | 对应命令 / 工具 |
 |---|---|---|---|
 | **① 拉取 / 更新** | 从 Moodle 把课件增量下载到本机缓存；结果分 ok / 失败阻断 / 未验证三档如实报告 | 登录一次后，系统自动完成 | `moodle-dl` 写入 `moodle-sync/` |
-| **② 映射进 Obsidian** | 把下载树原样放进各课 `99 Moodle Mirror/` | 系统自动完成（可完全离线） | `python3 scripts/mirror.py sync` |
-| **①+② 完整同步** | 先联网拉取最新更新，再立即镜像映射进库 | 一键完成 | `python3 scripts/mirror.py run` |
-| **伴生 Markdown** | docx 必转结构化 md；pdf 不动；pptx 抽文字与备注 | 按需运行 | `python3 scripts/to_markdown.py` |
+| **② 映射进 Obsidian** | 把下载树原样放进各课 `99 Moodle Mirror/` | 系统自动完成（可完全离线） | `python3 "$SKILL_DIR/scripts/mirror.py" sync` |
+| **①+② 完整同步** | 先联网拉取最新更新，再立即镜像映射进库 | 一键完成 | `python3 "$SKILL_DIR/scripts/mirror.py" run` |
+| **伴生 Markdown** | docx 必转结构化 md；pdf 不动；pptx 抽文字与备注 | 按需运行 | `python3 "$SKILL_DIR/scripts/to_markdown.py"` |
 | **可选：moodle-mcp** | 对接上游只读查 ddl / 成绩 / briefing（非本仓库自研） | 需另装上游；未装不影响①② | `scripts/mcp_query.py` 薄封装 |
 | **可选：笔记进阶整理** | 镜像齐后，可用五原则等框架整理知识结构；**也完全可以不用** | 默认不做；你选用并确认后才写入 | 见下方专节 |
 
@@ -174,10 +176,10 @@ python3 "$SKILL_DIR/scripts/to_markdown.py" "$VAULT/<Course Folder>"
 
 ```bash
 # 干跑：确认有 token，不真正请求
-python3 "$SKILL_DIR/scripts/mcp_query.py" --config "$VAULT/moodle-sync/config.json" deadlines
+python3 "$SKILL_DIR/scripts/mcp_query.py" --config "$SOURCE_ROOT/config.json" deadlines
 
 # 实跑：指向本地 moodle-mcp 仓库
-python3 "$SKILL_DIR/scripts/mcp_query.py" --config "$VAULT/moodle-sync/config.json" briefing \
+python3 "$SKILL_DIR/scripts/mcp_query.py" --config "$SOURCE_ROOT/config.json" briefing \
   --mcp-dir /path/to/moodle-mcp
 ```
 
@@ -257,9 +259,9 @@ python3 "$SKILL_DIR/scripts/to_markdown.py" "$VAULT/<Course Folder>"
 | 文件 | 所有者 | 关键键 |
 |---|---|---|
 | `<vault>/moodle-mirror.json`（从 `config.template.json` 复制） | `scripts/mirror.py` | `source_root`, `vault_root`, `mappings`, `downloader`, `mirror_folder` |
-| `<vault>/moodle-sync/config.json`（`chmod 600`） | `moodle-dl` | `moodle_domain`, `moodle_path`, `download_course_ids`, `token` |
+| `<SOURCE_ROOT>/config.json`（`chmod 600`，默认即 `<vault>/moodle-sync/config.json`） | `moodle-dl` | `moodle_domain`, `moodle_path`, `download_course_ids`, `token` |
 
-首次初始化请先 `mkdir -p <vault>/moodle-sync`，再在该目录运行 `moodle-dl --init`。
+首次初始化请先 `mkdir -p <SOURCE_ROOT>`（默认 `<vault>/moodle-sync`），再在该目录运行 `moodle-dl --init`。
 
 ---
 
@@ -275,7 +277,7 @@ python3 "$SKILL_DIR/scripts/to_markdown.py" "$VAULT/<Course Folder>"
 | **伴生预览 / 强制覆盖** | `to_markdown.py … --dry-run` 只报告；`--force` 覆盖用户改过的 md（先备 `.localbak`） |
 | **清理旧冲突备份** | `mirror.py --config … doctor --prune-conflicts 30`（删 30 天前的） |
 | **状态 JSON 限事件数** | `status --json --events 20`（0 = 全部，默认 50） |
-| **（可选）mcp 干跑** | `python3 "$SKILL_DIR/scripts/mcp_query.py" --config "$VAULT/moodle-sync/config.json" deadlines` |
+| **（可选）mcp 干跑** | `python3 "$SKILL_DIR/scripts/mcp_query.py" --config "$SOURCE_ROOT/config.json" deadlines` |
 | **（可选）mcp 实跑** | `… briefing --mcp-dir /path/to/moodle-mcp`（需已安装上游） |
 
 - 登录与 Token 获取指南：[`references/moodle-login.md`](references/moodle-login.md)

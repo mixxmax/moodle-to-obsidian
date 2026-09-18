@@ -17,6 +17,7 @@ import os
 import re
 import shutil
 import subprocess
+from datetime import datetime
 from urllib.parse import quote
 
 try:
@@ -38,6 +39,11 @@ EXTS = {".docx", ".pptx", ".doc", ".rtf", ".ppt"}
 LEGACY_EXTS = {".doc", ".rtf", ".ppt"}
 
 FRONT_RE = re.compile(r"\A---\n(.*?)\n---\n", re.DOTALL)
+
+# Ownership evidence for pre-fingerprint companions: our generator always
+# emits this boilerplate line. A same-name md WITHOUT it is a user file.
+GENERATOR_MARKER = "自动转换为 Markdown"
+ORIGINAL_MARKER = "原件格式"
 
 
 def enc(path_frag):
@@ -231,6 +237,7 @@ def build_text(f, ext, body, source_sha, complete):
         f"source_sha12: {source_sha}",
         f"complete: {'true' if complete else 'false'}",
         "BODY-SHA12-PLACEHOLDER",
+        "FILE-SHA12-PLACEHOLDER",
         "---",
         "",
         f"# {os.path.splitext(f)[0]}",
@@ -250,7 +257,55 @@ def build_text(f, ext, body, source_sha, complete):
     text = re.sub(r"\n{3,}", "\n\n", text).rstrip() + "\n"
     body_sha = sha12_text(body_of(text))
     text = text.replace("BODY-SHA12-PLACEHOLDER", f"body_sha12: {body_sha}", 1)
+    file_sha = sha12_text("".join(
+        ln for ln in text.splitlines(keepends=True)
+        if not ln.startswith("file_sha12:") and "FILE-SHA12-PLACEHOLDER" not in ln))
+    text = text.replace("FILE-SHA12-PLACEHOLDER", f"file_sha12: {file_sha}", 1)
     return text
+
+
+def _unique_backup(path, suffix):
+    """Timestamped backup path; never reuses an existing backup."""
+    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    cand = f"{path}.{suffix}.{stamp}"
+    if not os.path.exists(cand):
+        return cand
+    i = 1
+    while True:
+        cand2 = f"{cand}.{i}"
+        if not os.path.exists(cand2):
+            return cand2
+        i += 1
+
+
+def _fm_source_file(fm):
+    """Decode our source_file frontmatter value; None if absent/unparseable."""
+    raw = (fm or {}).get("source_file", "").strip()
+    if not raw:
+        return None
+    try:
+        return json.loads(raw)
+    except ValueError:
+        return raw.strip('"')
+
+
+def _is_legacy_ours(existing, f):
+    """Pre-fingerprint md that carries our boilerplate for THIS source file."""
+    return (GENERATOR_MARKER in existing and ORIGINAL_MARKER in existing
+            and _fm_source_file(parse_frontmatter(existing)) == f)
+
+
+def _file_sha_ok(existing, fm):
+    """True when the file is byte-identical to what we last generated."""
+    if not fm:
+        return False
+    if fm.get("file_sha12"):
+        canon = "".join(ln for ln in existing.splitlines(keepends=True)
+                         if not ln.startswith("file_sha12:"))
+        return sha12_text(canon) == fm["file_sha12"]
+    if fm.get("body_sha12"):
+        return sha12_text(body_of(existing)) == fm["body_sha12"]
+    return False
 
 
 def convert_source(src, ext):
@@ -275,14 +330,17 @@ def main(argv=None):
         description="Generate .md companions next to Office files.")
     ap.add_argument("root", nargs="?", default=".")
     ap.add_argument("--force", action="store_true",
-        help="regenerate even user-edited companions (backs up to .md.localbak first)")
+        help="regenerate even user-edited companions (timestamped backup first)")
+    ap.add_argument("--adopt-legacy", action="store_true",
+        help="one-shot migration: regenerate pre-fingerprint companions that carry "
+             "our boilerplate (timestamped .legacybak backup first)")
     ap.add_argument("--dry-run", action="store_true",
         help="report what would change without writing")
     a = ap.parse_args(argv)
     root = os.path.abspath(a.root)
     converted, updated, skipped = 0, 0, 0
     conflicts, failed = [], []
-    user_files = []
+    user_files, legacy_files = [], []
     for dp, dn, fn in os.walk(root):
         dn[:] = [d for d in dn if d not in SKIP_DIRS]
         if any(s in dp for s in SKIP_DIRS):
@@ -298,32 +356,31 @@ def main(argv=None):
                 with open(out, encoding="utf-8") as fh:
                     existing = fh.read()
                 fm = parse_frontmatter(existing)
-                if not fm or "source_sha12" not in fm:
-                    user_files.append(os.path.relpath(out, root))
-                    if a.force and not a.dry_run:
-                        bak = out + ".userbak"
-                        if not os.path.exists(bak):
-                            shutil.copy2(out, bak)
-                    elif not a.dry_run:
+                if fm and "source_sha12" in fm:
+                    if not _file_sha_ok(existing, fm):
+                        conflicts.append(os.path.relpath(out, root))
+                        if a.force and not a.dry_run:
+                            shutil.copy2(out, _unique_backup(out, "localbak"))
+                        else:
+                            continue
+                    elif (fm.get("source_sha12") == source_sha
+                            and fm.get("complete", "true") == "true"):
                         skipped += 1
                         continue
-                    # --force falls through to regenerate (backed up above)
-                    if not a.force:
-                        continue
-                    fm = {}
-                elif sha12_text(body_of(existing)) != fm.get("body_sha12", ""):
-                    conflicts.append(os.path.relpath(out, root))
-                    if a.force and not a.dry_run:
-                        bak = out + ".localbak"
-                        if not os.path.exists(bak):
-                            shutil.copy2(out, bak)
+                    # else: source changed or stub upgrade -> regenerate
+                elif _is_legacy_ours(existing, f):
+                    legacy_files.append(os.path.relpath(out, root))
+                    if (a.adopt_legacy or a.force) and not a.dry_run:
+                        shutil.copy2(out, _unique_backup(out, "legacybak"))
                     else:
                         continue
-                elif (fm.get("source_sha12") == source_sha
-                        and fm.get("complete", "true") == "true"):
-                    skipped += 1
-                    continue
-                # else: source changed, stub upgrade, or --force -> regenerate
+                else:
+                    user_files.append(os.path.relpath(out, root))
+                    if a.force and not a.dry_run:
+                        shutil.copy2(out, _unique_backup(out, "userbak"))
+                    else:
+                        skipped += 1
+                        continue
                 action = "updated"
             else:
                 action = "converted"
@@ -349,10 +406,15 @@ def main(argv=None):
     print("converted:", converted)
     print("updated:", updated)
     print("skipped (up to date):", skipped)
-    print("conflicts (user-edited, kept; --force with .localbak to overwrite):",
+    print("conflicts (user-edited, kept; --force with timestamped backup to overwrite):",
           len(conflicts))
     for p in conflicts:
         print("   =", p)
+    if legacy_files:
+        print("legacy companions (pre-fingerprint, kept; --adopt-legacy migrates "
+              "with timestamped backup):", len(legacy_files))
+        for p in legacy_files:
+            print("   =", p)
     if user_files:
         print("user-owned .md (not ours, kept; --force with .userbak to overwrite):",
               len(user_files))

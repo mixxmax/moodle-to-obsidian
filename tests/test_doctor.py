@@ -55,6 +55,25 @@ def test_doctor_corrupt_dl_config(mirror, workdir, tmp_path):
     assert "NOT READY" in out or "not ready" in out.lower()
 
 
+def test_doctor_flags_missing_moodle_path(mirror, workdir, tmp_path):
+    import stat
+    dl = tmp_path / "dl.sh"
+    dl.write_text("#!/bin/sh\nexit 0\n")
+    dl.chmod(dl.stat().st_mode | stat.S_IXUSR)
+    base = {"moodle_domain": "x", "download_course_ids": ["1"], "token": "T"}
+    (workdir["cache"] / "config.json").write_text(json.dumps(base), encoding="utf-8")
+    (workdir["cache"] / "config.json").chmod(0o600)
+    from conftest import write_config
+    cfg = write_config(workdir["vault"] / "moodle-mirror.json", downloader=str(dl))
+    rc, out, err = run_cli(mirror, "--config", str(cfg), "doctor")
+    assert "moodle_path" in out and ("NOT READY" in out)
+    (workdir["cache"] / "config.json").write_text(
+        json.dumps({**base, "moodle_path": "/"}), encoding="utf-8")
+    (workdir["cache"] / "config.json").chmod(0o600)
+    rc, out, err = run_cli(mirror, "--config", str(cfg), "doctor")
+    assert "run READY" in out and "NOT READY" not in out
+
+
 def test_doctor_complete_reports_run_ready(mirror, workdir, tmp_path):
     import stat
     dl = tmp_path / "dl.sh"

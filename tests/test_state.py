@@ -23,6 +23,20 @@ def test_corrupt_manifest_backed_up_and_adopted_visible(mirror, workdir):
     assert "已有认领" in out
 
 
+def test_corrupt_manifest_recovered_no_stamp(mirror, workdir):
+    import json
+    cfg = write_config(workdir["vault"] / "moodle-mirror.json")
+    _sync(mirror, cfg)
+    (workdir["state"] / "manifest.json").write_text("{bad", encoding="utf-8")
+    rc, out, err = run_cli(mirror, "--config", str(cfg), "sync")
+    assert rc == 0, err
+    mp = json.loads((workdir["state"] / "manifest.json").read_text(encoding="utf-8"))
+    assert "last_successful_sync" not in mp
+    status = json.loads((workdir["state"] / "last-run.json").read_text(encoding="utf-8"))
+    assert status["status"] == "recovered"
+    assert "历史" in out or "recovered" in out.lower() or "⚠️" in out
+
+
 def test_unknown_manifest_version_errors_loudly_keeps_file(mirror, workdir):
     cfg = write_config(workdir["vault"] / "moodle-mirror.json")
     _sync(mirror, cfg)

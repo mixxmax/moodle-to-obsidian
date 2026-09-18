@@ -13,6 +13,9 @@ Lightweight pipeline: exact mirror, no LLM in the pipe, condense afterwards.
 
 - `<SKILL_DIR>` = the directory that contains this SKILL.md (scripts + template live here).
 - `<VAULT>` = the absolute path of the user's Obsidian vault.
+- `<SOURCE_ROOT>` = the downloader cache dir (moodle-dl's cwd; its `config.json`
+  and `running.lock` live here). Default: `<SOURCE_ROOT>` = `<VAULT>/moodle-sync`;
+  it may point outside the vault (recommended for git/cloud-synced vaults).
 - Every command below is copy-paste runnable from **any** working directory:
   script paths always start with `<SKILL_DIR>/scripts/`, configs always use
   `<VAULT>/...` absolute paths. Never rely on "currently cd'ed where".
@@ -25,15 +28,15 @@ Run detection first, then follow the decision tree:
 !`command -v moodle-dl && echo MOODLEDL_OK || echo MOODLEDL_MISSING`
 !`python3 -c "import docx; print('DOCX_OK')" 2>/dev/null || echo DOCX_MISSING`
 !`ls <VAULT>/moodle-mirror.json 2>/dev/null || echo NO_MIRROR_CONFIG`
-!`ls <VAULT>/moodle-sync/config.json 2>/dev/null || echo NO_DL_CONFIG`
-!`ls <VAULT>/moodle-sync/running.lock 2>/dev/null && echo LOCKED || echo UNLOCKED`
+!`ls <SOURCE_ROOT>/config.json 2>/dev/null || echo NO_DL_CONFIG`
+!`ls <SOURCE_ROOT>/running.lock 2>/dev/null && echo LOCKED || echo UNLOCKED`
 ```
 
 | Observation | Path |
 |---|---|
 | `NO_MIRROR_CONFIG` or `NO_DL_CONFIG` | Go Step 2 (login + config setup) |
 | `MOODLEDL_MISSING` | `pip install moodle-dl` / `uv tool install moodle-dl`, then Step 2. Without it only `sync` works, `run` is unavailable |
-| `DOCX_MISSING` | `pip install -r requirements.txt` (pins: `requirements.txt`); without them companions degrade to link-only stubs (file stays discoverable, content not extracted) |
+| `DOCX_MISSING` | `pip install -r "<SKILL_DIR>/requirements.txt"` (pins); without them companions degrade to link-only stubs (file stays discoverable, content not extracted) |
 | `LOCKED` | Stop: `pgrep -fl moodle-dl`, delete `running.lock` only if no process |
 
 Two config files, two owners (do not merge):
@@ -41,19 +44,19 @@ Two config files, two owners (do not merge):
 | File | Owner | Keys |
 |---|---|---|
 | `moodle-mirror.json` (vault root, copy from `config.template.json`) | mirror (`scripts/mirror.py`) | `source_root`, `vault_root`, `mappings`, `downloader` |
-| `moodle-sync/config.json` (`chmod 600`) | moodle-dl downloader | `moodle_domain`, `moodle_path`, `download_course_ids`, `token` |
+| `<SOURCE_ROOT>/config.json` (`chmod 600`) | moodle-dl downloader | `moodle_domain`, `moodle_path`, `download_course_ids`, `token` |
 
-Defaults: `vault_root` = current Obsidian vault; `source_root` = `<vault>/moodle-sync`; `mirror_folder` = `99 Moodle Mirror`; `state_dir` = `<source>/.moodle-local-sync`.
+Defaults: `vault_root` = current Obsidian vault; `source_root` = `<SOURCE_ROOT>` (default `<vault>/moodle-sync`); `mirror_folder` = `99 Moodle Mirror`; `state_dir` = `<source>/.moodle-local-sync`.
 
 ## Step 2: Set up per-user login (user-owned credential)
 
-Never use anyone else's token. Each user owns `moodle-sync/config.json` (`chmod 600`).
+Never use anyone else's token. Each user owns `<SOURCE_ROOT>/config.json` (`chmod 600`).
 
 1. Mirror config: copy `<SKILL_DIR>/config.template.json` → `<VAULT>/moodle-mirror.json`, fill `mappings` (course code → vault folder; replace the example entries). Set `downloader` to your moodle-dl path (or empty for sync-only mode).
-2. Download config: `mkdir -p <VAULT>/moodle-sync && cd <VAULT>/moodle-sync && moodle-dl --init` (sets `moodle_domain`, `download_course_ids`). Course IDs come from the Moodle course page URL or `mcp_query.py courses`.
+2. Download config: `mkdir -p <SOURCE_ROOT> && cd <SOURCE_ROOT> && moodle-dl --init` (sets `moodle_domain`, `download_course_ids`). Course IDs come from the Moodle course page URL or `mcp_query.py courses`.
 3. Get token via controlled browser (HKU is CAS-only, password API fails):
    login Moodle → visit `https://<domain>/admin/tool/mobile/launch.php?service=moodle_mobile_app&passport=12345&urlscheme=moodledl` → browser shows `ERR_ABORTED` = success → read `moodledl://token=<base64>` from Network → run:
-   `python3 "<SKILL_DIR>/scripts/save_token.py" --config <VAULT>/moodle-sync/config.json --url 'moodledl://token=...'`
+   `python3 "<SKILL_DIR>/scripts/save_token.py" --config <SOURCE_ROOT>/config.json --url 'moodledl://token=...'`
    (writes only `token`, preserves the rest; never prints it).
    Detail: `references/moodle-login.md`.
 4. `python3 "<SKILL_DIR>/scripts/mirror.py" --config <VAULT>/moodle-mirror.json doctor`
@@ -87,16 +90,16 @@ Rules: one `.md` per source alongside it, frontmatter records source, top links 
 
 ## Step 5: Optional progress layer via moodle-mcp (read-only)
 
-Shares the same user token from `moodle-sync/config.json`, never stores a second copy:
+Shares the same user token from `<SOURCE_ROOT>/config.json`, never stores a second copy:
 
 ```
-!`python3 "<SKILL_DIR>/scripts/mcp_query.py" --config <VAULT>/moodle-sync/config.json deadlines 2>/dev/null || echo MCP_FAILED`
+!`python3 "<SKILL_DIR>/scripts/mcp_query.py" --config <SOURCE_ROOT>/config.json deadlines 2>/dev/null || echo MCP_FAILED`
 ```
 
 Without `--mcp-dir` the shim is a dry-run planner (verifies token, prints the exact call). With `--mcp-dir /path/to/moodle-mcp` it executes and prints JSON:
 
 ```bash
-python3 "<SKILL_DIR>/scripts/mcp_query.py" --config <VAULT>/moodle-sync/config.json briefing --mcp-dir /path/to/moodle-mcp
+python3 "<SKILL_DIR>/scripts/mcp_query.py" --config <SOURCE_ROOT>/config.json briefing --mcp-dir /path/to/moodle-mcp
 ```
 
 Tools: `assignments/deadlines/grades/progress/health/dashboard/briefing/courses/...`. Only on demand, never daemonised. Detail: `references/moodle-mcp.md`.

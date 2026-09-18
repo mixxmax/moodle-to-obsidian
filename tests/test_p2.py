@@ -1,5 +1,8 @@
 """S2-5/S2-6: symlink visibility, MCP arg validation (offline-testable parts)."""
+import io
 import json
+import sys
+from contextlib import redirect_stderr, redirect_stdout
 
 from conftest import load, run_cli, write_config
 
@@ -55,6 +58,25 @@ def test_text_files_0644(mirror, workdir):
     for p in [(workdir["vault"] / "Course COMP1111" / "99 Moodle Mirror" / "Moodle Mirror Index.md"),
               (workdir["vault"] / "Log.md")]:
         assert oct(os.stat(p).st_mode & 0o777) == "0o644"
+
+
+def test_mcp_corrupt_config_clean_error(tmp_path):
+    mq = load("mcp_query")
+    (tmp_path / "c.json").write_text("{oops", encoding="utf-8")
+    out, err = io.StringIO(), io.StringIO()
+    old = sys.argv
+    sys.argv = ["mcp_query.py", "--config", str(tmp_path / "c.json"), "deadlines"]
+    try:
+        with redirect_stdout(out), redirect_stderr(err):
+            try:
+                mq.main()
+                rc = 0
+            except SystemExit as e:
+                rc = e.code
+    finally:
+        sys.argv = old
+    assert rc == 2
+    assert "Traceback" not in err.getvalue() and "unreadable config" in err.getvalue()
 
 
 def test_mcp_unknown_tool_rejected_in_dryrun(tmp_path):

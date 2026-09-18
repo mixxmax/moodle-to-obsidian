@@ -30,6 +30,37 @@ def test_pptx_carries_downgrade_warning(tmp_path):
     assert "Auto-extracted slide text" in md
 
 
+def test_legacy_companion_adopted_with_backup(tmp_path):
+    tm = load("to_markdown")
+    _docx(tmp_path / "n.docx", "v1")
+    _run(tm, tmp_path)
+    md = tmp_path / "n.md"
+    legacy = []
+    for ln in md.read_text(encoding="utf-8").splitlines(keepends=True):
+        if ln.startswith(("source_sha12:", "body_sha12:", "file_sha12:")):
+            continue
+        legacy.append(ln)
+    md.write_text("".join(legacy), encoding="utf-8")
+    _docx(tmp_path / "n.docx", "v2 CHANGED")
+    o = _run(tm, tmp_path)
+    assert "legacy companions" in o and "v2 CHANGED" not in md.read_text(encoding="utf-8")
+    o2 = _run(tm, tmp_path, "--adopt-legacy")
+    assert "updated: 1" in o2
+    assert "v2 CHANGED" in md.read_text(encoding="utf-8")
+    assert len(list(tmp_path.glob("n.md.legacybak.*"))) == 1
+
+
+def test_frontmatter_only_edit_counts_as_conflict(tmp_path):
+    tm = load("to_markdown")
+    _docx(tmp_path / "n.docx", "v1")
+    _run(tm, tmp_path)
+    md = tmp_path / "n.md"
+    md.write_text(md.read_text(encoding="utf-8") + "tags: [mine]\n", encoding="utf-8")
+    _docx(tmp_path / "n.docx", "v2")
+    o = _run(tm, tmp_path)
+    assert "conflicts" in o and "tags: [mine]" in md.read_text(encoding="utf-8")
+
+
 def test_first_gen_then_skip_then_update_on_source_change(tmp_path):
     tm = load("to_markdown")
     _docx(tmp_path / "n.docx", "v1")
@@ -53,8 +84,24 @@ def test_user_edited_md_conflicts_force_backs_up(tmp_path):
     o = _run(tm, tmp_path)
     assert "conflicts" in o and "my note" in md.read_text(encoding="utf-8")
     _run(tm, tmp_path, "--force")
-    assert (tmp_path / "n.md.localbak").exists()
+    baks = sorted(tmp_path.glob("n.md.localbak.*"))
+    assert len(baks) == 1 and "my note" in baks[0].read_text(encoding="utf-8")
     assert "my note" not in md.read_text(encoding="utf-8")
+
+
+def test_force_twice_keeps_two_backups(tmp_path):
+    tm = load("to_markdown")
+    _docx(tmp_path / "n.docx", "v1")
+    _run(tm, tmp_path)
+    md = tmp_path / "n.md"
+    md.write_text(md.read_text(encoding="utf-8") + "\n- note1\n", encoding="utf-8")
+    _run(tm, tmp_path, "--force")
+    md.write_text(md.read_text(encoding="utf-8") + "\n- note2\n", encoding="utf-8")
+    _docx(tmp_path / "n.docx", "v3")
+    _run(tm, tmp_path, "--force")
+    baks = sorted(tmp_path.glob("n.md.localbak.*"))
+    assert len(baks) == 2
+    assert "note2" in baks[-1].read_text(encoding="utf-8")  # latest pre-image kept
 
 
 def test_handwritten_same_name_kept(tmp_path):
