@@ -39,7 +39,7 @@ vault with an inside cache and tells you the exact `.gitignore` line.
 1. `pip install moodle-dl` (or `uv tool install moodle-dl`). Find it: `command -v moodle-dl`.
 2. Mirror config: copy `config.template.json` → `<vault>/moodle-mirror.json`,
    fill `mappings`, set `downloader` (or empty for sync-only).
-3. Download config: `mkdir -p moodle-sync && cd moodle-sync && moodle-dl --init`
+3. Download config: `mkdir -p <VAULT>/moodle-sync && cd <VAULT>/moodle-sync && moodle-dl --init`
    — creates the dir if missing; sets domain and `download_course_ids`
    (IDs from the Moodle course URL or `mcp_query.py courses`).
 4. Log in to `https://moodle.hku.hk` in a controlled Chrome you own.
