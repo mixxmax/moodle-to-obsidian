@@ -10,8 +10,12 @@ The original file is never modified. Each .md links back to its source.
 If python-docx/python-pptx is missing, a link-only stub is written instead
 of crashing, so the file stays discoverable.
 """
+import argparse
+import hashlib
+import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 from urllib.parse import quote
@@ -31,13 +35,45 @@ except ImportError:
     HAS_PPTX = False
 
 SKIP_DIRS = {"98 Duplicates", "00 Derived Materials", ".moodle-local-sync"}
-DEFAULT_ROOT = sys.argv[1] if len(sys.argv) > 1 else "."
-ROOT = os.path.abspath(DEFAULT_ROOT)
 EXTS = {".docx", ".pptx", ".doc", ".rtf", ".ppt"}
+LEGACY_EXTS = {".doc", ".rtf", ".ppt"}
+
+FRONT_RE = re.compile(r"\A---\n(.*?)\n---\n", re.DOTALL)
 
 
 def enc(path_frag):
     return quote(path_frag)
+
+
+def sha12_file(path):
+    h = hashlib.sha256()
+    with open(path, "rb") as fh:
+        for chunk in iter(lambda: fh.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()[:12]
+
+
+def sha12_text(text):
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()[:12]
+
+
+def parse_frontmatter(text):
+    """Our own frontmatter -> dict, or None if absent/unparseable."""
+    m = FRONT_RE.match(text)
+    if not m:
+        return None
+    out = {}
+    for line in m.group(1).splitlines():
+        if ":" not in line:
+            continue
+        k, v = line.split(":", 1)
+        out[k.strip()] = v.strip()
+    return out
+
+
+def body_of(text):
+    m = FRONT_RE.match(text)
+    return text[m.end():] if m else text
 
 
 def clean(text):
@@ -169,12 +205,15 @@ def pptx_table_to_md(tbl):
 
 
 def convert_legacy(path):
-    """.doc / .rtf / .ppt via textutil."""
+    """.doc / .rtf / .ppt via textutil (macOS). Raises RuntimeError when the
+    converter itself is unavailable so the caller writes a stub instead."""
+    if shutil.which("textutil") is None:
+        raise RuntimeError("textutil not found (macOS only for .doc/.rtf/.ppt)")
     try:
         txt = subprocess.run(["textutil", "-convert", "txt", "-stdout", path],
                              capture_output=True, text=True, timeout=120).stdout
-    except Exception:
-        return []
+    except Exception as e:
+        raise RuntimeError(f"textutil failed: {e}") from e
     lines = []
     for ln in txt.splitlines():
         c = clean(ln)
@@ -184,9 +223,67 @@ def convert_legacy(path):
     return lines
 
 
-def main():
-    converted, failed, skipped = 0, [], 0
-    for dp, dn, fn in os.walk(ROOT):
+def build_text(f, ext, body, source_sha, complete):
+    safe = f.replace("[", "").replace("]", "")
+    head = [
+        "---",
+        f"source_file: {json.dumps(f, ensure_ascii=False)}",
+        f"converted_from: {ext.lower().lstrip('.')}",
+        f"source_sha12: {source_sha}",
+        f"complete: {'true' if complete else 'false'}",
+        "BODY-SHA12-PLACEHOLDER",
+        "---",
+        "",
+        f"# {os.path.splitext(f)[0]}",
+        "",
+    ]
+    if ext.lower() in (".pptx", ".ppt"):
+        head += ["> [!warning] Auto-extracted slide text — layout, images and animations may differ. Check the original.", ""]
+    head += [
+        f"> 由 `{f}` 自动转换为 Markdown，便于在 Obsidian 内阅读与全文检索。"
+        f" 原件格式（排版、图片、缩进）以原文为准：[{safe}]({enc(f)})",
+        "",
+        "---",
+        "",
+    ]
+    text = "\n".join(head + body)
+    text = re.sub(r"\n{3,}", "\n\n", text).rstrip() + "\n"
+    body_sha = sha12_text(body_of(text))
+    text = text.replace("BODY-SHA12-PLACEHOLDER", f"body_sha12: {body_sha}", 1)
+    return text
+
+
+def convert_source(src, ext):
+    """Returns (body_lines, complete_bool). Raises RuntimeError for stub cases."""
+    if ext == ".docx":
+        if not HAS_DOCX:
+            raise RuntimeError("python-docx not installed (pip install python-docx)")
+        return convert_docx(src), True
+    if ext == ".pptx":
+        if not HAS_PPTX:
+            raise RuntimeError("python-pptx not installed (pip install python-pptx)")
+        return convert_pptx(src), True
+    return convert_legacy(src), True
+
+
+def stub_body(reason):
+    return [f"> [!warning] Converter unavailable: {reason}. Open the original file.", ""]
+
+
+def main(argv=None):
+    ap = argparse.ArgumentParser(prog="to_markdown.py",
+        description="Generate .md companions next to Office files.")
+    ap.add_argument("root", nargs="?", default=".")
+    ap.add_argument("--force", action="store_true",
+        help="regenerate even user-edited companions (backs up to .md.localbak first)")
+    ap.add_argument("--dry-run", action="store_true",
+        help="report what would change without writing")
+    a = ap.parse_args(argv)
+    root = os.path.abspath(a.root)
+    converted, updated, skipped = 0, 0, 0
+    conflicts, failed = [], []
+    user_files, legacy_files = [], []
+    for dp, dn, fn in os.walk(root):
         dn[:] = [d for d in dn if d not in SKIP_DIRS]
         if any(s in dp for s in SKIP_DIRS):
             continue
@@ -196,64 +293,71 @@ def main():
                 continue
             src = os.path.join(dp, f)
             out = os.path.join(dp, stem + ".md")
+            source_sha = sha12_file(src)
             if os.path.exists(out):
-                skipped += 1
-                continue
-            degraded = False
+                with open(out, encoding="utf-8") as fh:
+                    existing = fh.read()
+                fm = parse_frontmatter(existing)
+                if not fm or "source_sha12" not in fm:
+                    user_files.append(os.path.relpath(out, root))
+                    if a.force and not a.dry_run:
+                        bak = out + ".userbak"
+                        if not os.path.exists(bak):
+                            shutil.copy2(out, bak)
+                    elif not a.dry_run:
+                        skipped += 1
+                        continue
+                    # --force falls through to regenerate (backed up above)
+                    if not a.force:
+                        continue
+                    fm = {}
+                elif sha12_text(body_of(existing)) != fm.get("body_sha12", ""):
+                    conflicts.append(os.path.relpath(out, root))
+                    if a.force and not a.dry_run:
+                        bak = out + ".localbak"
+                        if not os.path.exists(bak):
+                            shutil.copy2(out, bak)
+                    else:
+                        continue
+                elif (fm.get("source_sha12") == source_sha
+                        and fm.get("complete", "true") == "true"):
+                    skipped += 1
+                    continue
+                # else: source changed, stub upgrade, or --force -> regenerate
+                action = "updated"
+            else:
+                action = "converted"
             try:
-                if ext.lower() == ".docx":
-                    if not HAS_DOCX:
-                        raise RuntimeError("python-docx not installed (pip install python-docx)")
-                    body = convert_docx(src)
-                elif ext.lower() == ".pptx":
-                    if not HAS_PPTX:
-                        raise RuntimeError("python-pptx not installed (pip install python-pptx)")
-                    body = convert_pptx(src)
-                else:
-                    body = convert_legacy(src)
+                body, complete = convert_source(src, ext.lower())
             except RuntimeError as e:
-                body = [f"> [!warning] Converter unavailable: {e}. Open the original file.", ""]
-                degraded = True
+                body, complete = stub_body(str(e)), False
             except Exception as e:
-                failed.append((os.path.relpath(src, ROOT), str(e)[:80]))
+                failed.append((os.path.relpath(src, root), str(e)[:80]))
                 continue
             if not body:
-                failed.append((os.path.relpath(src, ROOT), "empty output"))
+                failed.append((os.path.relpath(src, root), "empty output"))
                 continue
-
-            # Obsidian does NOT recognize escaped brackets (\\[ \\]) in link
-            # TEXT — strip them from the display name instead; the URL keeps
-            # percent-encoded %5B %5D (verified working by user test 2026-09-06)
-            safe = f.replace("[", "").replace("]", "")
-            head = [
-                "---",
-                f'source_file: "{f}"',
-                f"converted_from: {ext.lower().lstrip('.')}",
-                "---",
-                "",
-                f"# {stem}",
-                "",
-            ]
-            if ext.lower() in (".pptx", ".ppt"):
-                head += ["> [!warning] Auto-extracted slide text — layout, images and animations may differ. Check the original.", ""]
-            if degraded:
-                pass  # body already carries the converter-unavailable warning
-            head += [
-                f"> 由 `{f}` 自动转换为 Markdown，便于在 Obsidian 内阅读与全文检索。"
-                f" 原件格式（排版、图片、缩进）以原文为准：[{safe}]({enc(f)})",
-                "",
-                "---",
-                "",
-            ]
-            # collapse runs of blank lines
-            text = "\n".join(head + body)
-            text = re.sub(r"\n{3,}", "\n\n", text).rstrip() + "\n"
-            with open(out, "w", encoding="utf-8") as fh:
-                fh.write(text)
-            converted += 1
+            text = build_text(f, ext, body, source_sha, complete)
+            if not a.dry_run:
+                with open(out, "w", encoding="utf-8") as fh:
+                    fh.write(text)
+            if action == "updated":
+                updated += 1
+            else:
+                converted += 1
 
     print("converted:", converted)
-    print("skipped (md already there):", skipped)
+    print("updated:", updated)
+    print("skipped (up to date):", skipped)
+    print("conflicts (user-edited, kept; --force with .localbak to overwrite):",
+          len(conflicts))
+    for p in conflicts:
+        print("   =", p)
+    if user_files:
+        print("user-owned .md (not ours, kept; --force with .userbak to overwrite):",
+              len(user_files))
+        for p in user_files:
+            print("   =", p)
     print("failed:", len(failed))
     for p, e in failed:
         print("   !", p, "|", e)

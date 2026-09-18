@@ -11,6 +11,7 @@
 | withdrawn grows | teacher removed files | intended: local kept, index lists under Retained |
 | links broken in Obsidian | `[]` in label | reconvert: labels strip brackets, targets encoded |
 | token expired | password change / term rollover | repeat login flow, `save_token.py`, `doctor` |
+| `manifest.json` corrupt | crash / disk error / manual edit | sync auto-renames it to `manifest.json.corrupt-<ts>`, rebuilds, and counts mirrored files as adopted (visible in balance + changelog); originals never touched |
 | `run`: no downloader / pull failed | `downloader` empty or moodle-dl unconfigured | set `downloader` to `command -v moodle-dl`; run `moodle-dl --init` in `moodle-sync/`; or use `sync` |
 | `destinations ... collide` | two codes → same folder | one folder per course in `mappings` |
 | `must not overlap source_root` | mapping inside `moodle-sync/` | destinations must be vault folders outside the download dir |

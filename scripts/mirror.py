@@ -195,10 +195,32 @@ def _lock(state: Path):
         finally: h.close()
 
 def _manifest(p: Path):
-    if not p.exists(): return {"version": MANIFEST_VERSION, "courses": {}}
-    m = json.loads(p.read_text(encoding="utf-8"))
-    if m.get("version") != MANIFEST_VERSION: raise RuntimeError("unsupported manifest")
-    return m
+    """Load manifest. Returns (manifest, reset_note).
+
+    A corrupt file is NEVER parsed in place: it is renamed to
+    manifest.json.corrupt-<ts> and sync restarts from empty (everything
+    already mirrored is then counted as adopted, visibly)."""
+    if not p.exists():
+        return {"version": MANIFEST_VERSION, "courses": {}}, None
+    try:
+        m = json.loads(p.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as e:
+        stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+        bak = p.with_name(f"{p.name}.corrupt-{stamp}")
+        try:
+            p.rename(bak)
+        except OSError as ee:
+            raise RuntimeError(f"manifest unreadable and cannot back it up: {ee}") from ee
+        note = (f"manifest was corrupt ({type(e).__name__}), preserved as "
+                f"{bak.name}; restarting history — mirrored files count as adopted")
+        return {"version": MANIFEST_VERSION, "courses": {}}, note
+    if m.get("version") != MANIFEST_VERSION or not isinstance(m.get("courses"), dict):
+        raise RuntimeError(
+            f"unsupported manifest in {p} (version {m.get('version')!r}). "
+            "Recovery: inspect it, then either restore from backup or move it aside "
+            f"(e.g. mv {p.name} {p.name}.bak) and re-run sync; mirrored files will "
+            "be adopted, never deleted.")
+    return m, None
 
 def synchronize(cfg: Config) -> SyncResult:
     if not cfg.source_root.is_dir(): raise RuntimeError(f"source_root missing: {cfg.source_root}")
@@ -206,8 +228,11 @@ def synchronize(cfg: Config) -> SyncResult:
     if (cfg.source_root / "running.lock").exists():
         raise SyncBusyError("download still running; mirror not started")
     with _lock(cfg.state_dir):
-        mp = _manifest(cfg.state_dir / "manifest.json"); courses = mp["courses"]
+        mp, reset_note = _manifest(cfg.state_dir / "manifest.json")
+        courses = mp["courses"]
         res = SyncResult(started_at=_now())
+        if reset_note:
+            print(f"⚠️ {reset_note}", file=sys.stderr)
         by_code: dict[str, list[Path]] = {}
         for it in sorted(cfg.source_root.iterdir(), key=lambda x: x.name.casefold()):
             if it.is_dir():
@@ -254,7 +279,9 @@ def synchronize(cfg: Config) -> SyncResult:
                         _acopy(d, bak); _acopy(s, d); ev = "conflicted"
                     else:
                         _acopy(s, d); ev = "restored" if old.get("status") == "withdrawn" else "updated"
-                elif old is None: res.adopted += 1
+                elif old is None:
+                    res.adopted += 1
+                    res.events.append({"type": "adopted", "course": code, "path": rel})
                 elif old.get("status") == "withdrawn": ev = "restored"
                 else: res.unchanged += 1
                 nxt[rel] = {"status": "current", "size": st.st_size, "mtime_ns": st.st_mtime_ns,
@@ -273,9 +300,15 @@ def synchronize(cfg: Config) -> SyncResult:
         for code in sorted(courses):
             if code not in by_code: res.missing_courses.append(code)
         res.finished_at = _now(); mp["last_successful_sync"] = res.finished_at
+        if reset_note:
+            res.events.append({"type": "note", "course": "-", "path": reset_note})
         lines = [f"\n## Sync {res.finished_at}",
                  f"- Added {res.added} · Updated {res.updated} · Restored {res.restored} · Withdrawn {res.withdrawn} · Conflicted {res.conflicted} · Adopted {res.adopted} · Unchanged {res.unchanged}"]
-        for e in res.events: lines.append(f"- {e['type']} `{e['course']}` {e['path']}")
+        for e in res.events:
+            if e["type"] == "note":
+                lines.append(f"- ⚠️ {e['path']}")
+            else:
+                lines.append(f"- {e['type']} `{e['course']}` {e['path']}")
         for u in res.unmapped_courses: lines.append(f"- UNMAPPED {u}")
         for d_ in res.duplicate_courses: lines.append(f"- DUPLICATE {d_} (skipped)")
         _atext(cfg.state_dir / "manifest.json", json.dumps(mp, ensure_ascii=False, indent=2) + "\n")
@@ -342,8 +375,10 @@ def _print_guide(cfg: Config, *, mode: str, result: dict | None = None, failed: 
         print(
             f"📊 计数：+{result.get('added', 0)} 新增 · ~{result.get('updated', 0)} 更新 · "
             f"{result.get('restored', 0)} 恢复 · {result.get('withdrawn', 0)} 撤回留底 · "
-            f"{result.get('conflicted', 0)} 冲突备份"
+            f"{result.get('conflicted', 0)} 冲突备份 · {result.get('adopted', 0)} 已有认领"
         )
+        if result.get("adopted", 0):
+            print("   · adopted = 未做增量比对直接认领的既有文件（首次运行或 manifest 重建时正常）")
         for u in result.get("unmapped_courses") or []:
             print(f"   · UNMAPPED {u}")
         for d in result.get("duplicate_courses") or []:
@@ -387,6 +422,9 @@ def _dl_config_status(cfg: Config) -> tuple[bool, list[str]]:
     for key in ("moodle_domain", "download_course_ids", "token"):
         if not raw.get(key):
             reasons.append(f"empty {key} in {p}")
+    if raw.get("download_also_with_cookie") and not raw.get("privatetoken"):
+        reasons.append(f"download_also_with_cookie is on but privatetoken missing in {p} "
+                       "(cookie downloads will silently fail; run 'moodle-dl --new-token --sso')")
     try:
         if stat.S_IMODE(p.stat().st_mode) != 0o600:
             reasons.append(f"{p} is not mode 600 (run: chmod 600 {p})")
@@ -423,6 +461,12 @@ def _doctor(cfg: Config) -> int:
     print(f"{'OK  run READY' if run_ready else 'ISSUE  run NOT READY'}")
     for r in run_reasons:
         print(f"   · {r}")
+    # --- credential hygiene: warn, never write ---
+    if (cfg.vault_root / ".git").exists() and _within(cfg.vault_root, cfg.source_root):
+        print("ISSUE  vault is a git repo and the download cache (with credentials) "
+              "lives inside it")
+        print(f"   · keep secrets out of git: printf '*\\n' > {cfg.source_root / '.gitignore'}")
+        print("   · or point source_root outside the vault (recommended) and re-run doctor")
     if busy:
         _print_guide(cfg, mode="doctor", failed="busy")
     elif not ok:
@@ -502,7 +546,25 @@ def main(argv=None) -> int:
                 print(f"📁 笔记库根：{cfg.vault_root}")
                 print(f"👉 下一步：先 run 或 sync 完成首轮同步")
                 return 1
-            d = json.loads(p.read_text(encoding="utf-8"))
+            try:
+                d = json.loads(p.read_text(encoding="utf-8"))
+            except (OSError, ValueError) as e:
+                print(f"mirror.py: last-run.json unreadable ({type(e).__name__}); "
+                      f"state may be corrupt. Inspect {p}, restore from backup, or "
+                      "re-run sync (mirrored files are adopted, never deleted).",
+                      file=sys.stderr)
+                return 2
+            if not isinstance(d, dict):
+                print(f"mirror.py: last-run.json root must be an object: {p}",
+                      file=sys.stderr)
+                return 2
+            missing = [k for k in ("added", "updated", "restored", "withdrawn",
+                                   "conflicted", "adopted", "unchanged",
+                                   "finished_at") if k not in d]
+            if missing:
+                print(f"mirror.py: last-run.json missing keys {missing}; state may be "
+                      f"from an older version. Re-run sync to rewrite it.", file=sys.stderr)
+                return 2
             print(json.dumps(d, ensure_ascii=False, indent=2) if a.json else
                   f"+{d['added']} added ~{d['updated']} updated, {d['restored']} restored, "
                   f"{d['withdrawn']} withdrawn, {d.get('conflicted',0)} conflicted, "
