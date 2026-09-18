@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Save per-user Moodle token into moodle-dl's config (moodle-sync/config.json).
+"""Save per-user Moodle token into moodle-dl's config (<SOURCE_ROOT>/config.json).
 That file belongs to moodle-dl (keys: moodle_domain, moodle_path,
 download_course_ids, token, privatetoken); this script only sets 'token' and
 preserves everything else (including an existing privatetoken). Never prints
@@ -13,13 +13,13 @@ credential via the native flow instead:
     # or, to rotate only the token:
     moodle-dl --new-token --sso
 
-Setup order: run 'moodle-dl --init' inside moodle-sync/ first (creates the
+Setup order: run 'moodle-dl --init' inside <SOURCE_ROOT>/ first (creates the
 file with domain + course IDs), then save the token here.
 
 Usage:
-  python3 save_token.py --config moodle-sync/config.json --url 'moodledl://token=<base64>'
-  python3 save_token.py --config moodle-sync/config.json --b64 '<base64>'
-  echo '<base64>' | python3 save_token.py --config moodle-sync/config.json --b64-stdin
+  python3 save_token.py --config <SOURCE_ROOT>/config.json --url 'moodledl://token=<base64>'
+  python3 save_token.py --config <SOURCE_ROOT>/config.json --b64 '<base64>'
+  echo '<base64>' | python3 save_token.py --config <SOURCE_ROOT>/config.json --b64-stdin
 The base64 decodes to '<id>:::<token>[:::<privatetoken>]'. Only the token part
 is stored (cleaned to [A-Za-z0-9] like upstream). File is chmod 600 after write.
 

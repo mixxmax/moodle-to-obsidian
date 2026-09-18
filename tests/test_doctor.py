@@ -97,8 +97,10 @@ def test_doctor_course_id_modes(mirror, workdir, tmp_path):
 
     _check([111], [], True, "")
     _check([], [999], True, "")  # blacklist mode: empty whitelist is legitimate
-    _check(["111"], [], False, "int list")
+    _check(["111"], [], False, "list of ints")
     _check([], [], False, "ALL courses")
+    for bad_ids in ("", None, 0, {}):
+        _check(bad_ids, [], False, "int list")
 
 
 def test_doctor_complete_reports_run_ready(mirror, workdir, tmp_path):

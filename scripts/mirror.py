@@ -367,12 +367,25 @@ def _manifest(p: Path):
         note = (f"manifest was corrupt ({type(e).__name__}), preserved as "
                 f"{bak.name}; restarting history — mirrored files count as adopted")
         return {"version": MANIFEST_VERSION, "courses": {}}, note
+    if not isinstance(m, dict):
+        raise MirrorStateError(
+            f"manifest root must be an object in {p} (got "
+            f"{type(m).__name__}). Recovery: move it aside "
+            f"(e.g. mv {p.name} {p.name}.bad) and re-run sync; mirrored files will "
+            "be adopted, never deleted.")
     if m.get("version") != MANIFEST_VERSION or not isinstance(m.get("courses"), dict):
         raise MirrorStateError(
             f"unsupported manifest in {p} (version {m.get('version')!r}). "
             "Recovery: inspect it, then either restore from backup or move it aside "
             f"(e.g. mv {p.name} {p.name}.bak) and re-run sync; mirrored files will "
             "be adopted, never deleted.")
+    for code, entry in m["courses"].items():
+        if not isinstance(entry, dict) or not isinstance(entry.get("files", {}), dict):
+            raise MirrorStateError(
+                f"manifest entry for {code!r} is malformed in {p} "
+                "(need object with object-valued 'files'). Recovery: move it aside "
+                f"(e.g. mv {p.name} {p.name}.bad) and re-run sync; mirrored files "
+                "will be adopted, never deleted.")
     return m, None
 
 def _resolve_identity(cfg: Config, code: str | None, dirname: str):
@@ -707,7 +720,8 @@ def _next_hint(cfg: Config, result: dict | None = None, *, failed: str | None = 
     if failed == "pull":
         return "先修好 moodle-dl（token / download_course_ids / 网络），再跑 run；或改用 sync 只映射已有缓存"
     if failed == "no_downloader":
-        return "要拉取：在 moodle-mirror.json 填 downloader，并完成 moodle-sync/config.json；只要映射：改跑 sync"
+        return ("要拉取：在 moodle-mirror.json 填 downloader，并完成下载配置；"
+                "只要映射：改跑 sync")
     if failed == "run_not_ready":
         return ("按上方 NOT READY 原因修好 moodle-dl 配置（--init / token / course_ids / "
                 "downloader 路径），当前只能 sync；不要跑 run")
@@ -729,7 +743,7 @@ def _next_hint(cfg: Config, result: dict | None = None, *, failed: str | None = 
             return ("有未映射/重复课程：写入 mappings（字面目录名亦可）或置 null 忽略，"
                     "再跑 sync；此前轮次不计成功")
         if result.get("missing_courses"):
-            return ("源课程目录消失（下载不完整或已撤课）：先检查 moodle-sync 下该课文件夹，"
+            return ("源课程目录消失（下载不完整或已撤课）：先检查下载根目录下该课文件夹，"
                     "确认后重跑 run 补拉；本地镜像已保留，未标撤回")
         if result.get("conflicted", 0):
             return ("打开更新记录找 state:conflicts/ 下的对应备份，对比本地修改；"
@@ -861,14 +875,18 @@ def _dl_config_status(cfg: Config) -> tuple[bool, list[str]]:
     if not raw.get("token"):
         reasons.append(f"empty token in {p} (run save_token.py or 'moodle-dl --new-token --sso')")
     # Upstream compares course_id ints; empty whitelist = download ALL, so an
-    # empty whitelist is only sane together with a blacklist.
+    # empty whitelist is only sane together with a blacklist. A present but
+    # non-list value ("", null, number, object) would crash or silently match
+    # nothing upstream -> reject it here.
     wl = raw.get("download_course_ids", [])
     bl = raw.get("dont_download_course_ids", [])
-    for key, ids in (("download_course_ids", wl), ("dont_download_course_ids", bl)):
-        if ids and (not isinstance(ids, list)
-                     or any(not isinstance(i, int) or isinstance(i, bool) for i in ids)):
-            reasons.append(f"{key} must be an int list in {p} "
-                           "(upstream compares ints; strings silently match nothing)")
+    for key in ("download_course_ids", "dont_download_course_ids"):
+        ids = raw.get(key, [])
+        if not isinstance(ids, list) or any(
+                not isinstance(i, int) or isinstance(i, bool) for i in ids):
+            reasons.append(f"{key} must be a list of ints in {p} "
+                           "(upstream compares ints; other shapes crash or silently "
+                           "match nothing)")
     if not wl and not bl:
         reasons.append(f"download_course_ids empty and no dont_download_course_ids in {p} "
                        "(upstream then downloads ALL courses; fill one list)")
@@ -988,7 +1006,7 @@ def _pull(cfg: Config) -> tuple[int, str, str]:
     if cfg.downloader is None:
         print("mirror.py: no downloader configured (sync-only mode).", file=sys.stderr)
         print("To enable 'run': set 'downloader' to your moodle-dl binary AND configure", file=sys.stderr)
-        print("moodle-dl itself (moodle-sync/config.json via 'moodle-dl --init': moodle_domain,", file=sys.stderr)
+        print("moodle-dl itself (<SOURCE_ROOT>/config.json via 'moodle-dl --init': moodle_domain,", file=sys.stderr)
         print("download_course_ids, token). Or use 'sync' to mirror an existing snapshot.", file=sys.stderr)
         return 2, "failed", "no_downloader"
     ver = _dl_version(cfg.downloader)

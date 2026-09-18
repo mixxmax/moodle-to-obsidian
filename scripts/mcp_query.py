@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Read-only moodle-mcp query shim. Reuses the user's own download token.
 
-Token source: moodle-sync/config.json (moodle-dl's file: moodle_domain,
+Token source: <SOURCE_ROOT>/config.json (moodle-dl's file: moodle_domain,
 moodle_path, token). Never stores a second copy, never prints it.
 
 Two modes:
@@ -12,9 +12,9 @@ Two modes:
                         invocation the user's MCP host should run. Exit 0.
 
 Usage:
-  python3 mcp_query.py --config moodle-sync/config.json deadlines
-  python3 mcp_query.py --config moodle-sync/config.json grades --course-id 12345
-  python3 mcp_query.py --config moodle-sync/config.json briefing --mcp-dir /path/to/moodle-mcp
+  python3 mcp_query.py --config <SOURCE_ROOT>/config.json deadlines
+  python3 mcp_query.py --config <SOURCE_ROOT>/config.json grades --course-id 12345
+  python3 mcp_query.py --config <SOURCE_ROOT>/config.json briefing --mcp-dir /path/to/moodle-mcp
 """
 import argparse
 import inspect
@@ -113,7 +113,7 @@ def _redact_obj(obj, token: str):
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--config", required=True, help="moodle-dl config (moodle-sync/config.json)")
+    ap.add_argument("--config", required=True, help="moodle-dl config (<SOURCE_ROOT>/config.json)")
     ap.add_argument("tool", help="|".join(sorted(set(TOOLS_NOARG) | set(TOOLS_COURSE))))
     ap.add_argument("--course-id", default="")
     ap.add_argument("--mcp-dir", default="")

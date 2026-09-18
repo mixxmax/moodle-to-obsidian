@@ -37,6 +37,20 @@ def test_corrupt_manifest_recovered_no_stamp(mirror, workdir):
     assert "历史" in out or "recovered" in out.lower() or "⚠️" in out
 
 
+def test_manifest_nonobject_shapes_error_loudly(mirror, workdir):
+    import json
+    cfg = write_config(workdir["vault"] / "moodle-mirror.json")
+    _sync(mirror, cfg)
+    for bad in ([], None, {"version": 1, "courses": {"C": []}},
+                {"version": 1, "courses": {"C": {"files": []}}}):
+        (workdir["state"] / "manifest.json").write_text(
+            json.dumps(bad), encoding="utf-8")
+        rc, out, err = run_cli(mirror, "--config", str(cfg), "sync")
+        assert rc == 2, bad
+        assert "Traceback" not in err, bad
+        assert (workdir["state"] / "manifest.json").exists()
+
+
 def test_unknown_manifest_version_errors_loudly_keeps_file(mirror, workdir):
     cfg = write_config(workdir["vault"] / "moodle-mirror.json")
     _sync(mirror, cfg)

@@ -76,6 +76,9 @@ pip install -r "$SKILL_DIR/requirements.txt"  # moodle-dl + python-docx + python
 # 复制映射配置文件到你的 Obsidian 库根目录
 cp "$SKILL_DIR/config.template.json" "$VAULT/moodle-mirror.json"
 
+# 初始化下载配置（在下载根目录生成 config.json：domain/path/课程名单）
+mkdir -p "$SOURCE_ROOT" && cd "$SOURCE_ROOT" && moodle-dl --init
+
 # 在浏览器中登录 Moodle 完成 CAS 认证后保存 Token（以 HKU 为例）
 python3 "$SKILL_DIR/scripts/save_token.py" --config "$SOURCE_ROOT/config.json" --url 'moodledl://token=...'
 
