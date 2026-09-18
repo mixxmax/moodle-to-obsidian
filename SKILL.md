@@ -33,7 +33,7 @@ Run detection first, then follow the decision tree:
 |---|---|
 | `NO_MIRROR_CONFIG` or `NO_DL_CONFIG` | Go Step 2 (login + config setup) |
 | `MOODLEDL_MISSING` | `pip install moodle-dl` / `uv tool install moodle-dl`, then Step 2. Without it only `sync` works, `run` is unavailable |
-| `DOCX_MISSING` | `pip install python-docx python-pptx`; without them companions degrade to link-only stubs (file stays discoverable, content not extracted) |
+| `DOCX_MISSING` | `pip install -r requirements.txt` (pins: `requirements.txt`); without them companions degrade to link-only stubs (file stays discoverable, content not extracted) |
 | `LOCKED` | Stop: `pgrep -fl moodle-dl`, delete `running.lock` only if no process |
 
 Two config files, two owners (do not merge):
@@ -75,7 +75,7 @@ Pull verdicts (printed, never silent): `ok` → mirror proceeds; `failed`
 `unverified` (downloader version outside pinned moodle-dl 2.3.x) → mirror
 proceeds with an explicit completeness caveat in terminal + changelog.
 
-Rules: native tree kept, add/update in place, withdrawn kept and marked, local edits backed up to `*.local-edit.bak`, every run appends changelog. Never let LLM rename or reorganise this layer.
+Rules: native tree kept, add/update in place, withdrawn kept and marked, local edits shelved to `state_dir/conflicts/` (mirror stays `.bak`-free), every run appends changelog. Never let LLM rename or reorganise this layer.
 
 ## Step 4: Generate md companions (docx must, pdf must-not)
 
@@ -133,7 +133,7 @@ Next-step picker (use the first that matches):
 |---|---|
 | pull 失败 / 无 downloader | 修好 token 与 course_ids 再 `run`；或改用 `sync` 只映射 |
 | UNMAPPED 课号 | 写入 `mappings` 后再 `sync` |
-| conflicted > 0 | 打开对应 `*.local-edit.bak` 对比 |
+| conflicted > 0 | 在更新记录里找 `state:conflicts/` 对应备份，对比本地修改 |
 | 本轮有新增/更新 | 在 Obsidian 打开 `99 Moodle Mirror`；需要可搜再说「生成伴生 md」 |
 | 本轮无变化 | 有新课件再 `run`；只重映缓存则 `sync` |
 | doctor 全 OK | 可 `run`（①+②）或 `sync`（只②） |

@@ -1,0 +1,9 @@
+# Runtime pins. Signal patterns in scripts/mirror.py are verified against
+# moodle-dl 2.3.x output; other majors/minors run as "unverified".
+moodle-dl>=2.3,<3
+python-docx>=1,<2
+python-pptx>=0.6,<1
+
+# Dev / CI only:
+pytest>=8
+ruff>=0.8

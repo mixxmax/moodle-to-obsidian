@@ -6,7 +6,19 @@ Generic course codes (e.g. PCLL8010, LAWS1234, COMP1111), relative paths only.
 No LLM, no secrets in logs. Per-user config, chmod 600 recommended.
 """
 from __future__ import annotations
-import argparse, filecmp, fcntl, json, os, re, shutil, stat, subprocess, sys, tempfile, time
+
+import argparse
+import fcntl
+import filecmp
+import json
+import os
+import re
+import shutil
+import stat
+import subprocess
+import sys
+import tempfile
+import time
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
@@ -17,8 +29,8 @@ AUTO_START = "<!-- MOODLE-LOCAL-SYNC:AUTO:START -->"
 AUTO_END = "<!-- MOODLE-LOCAL-SYNC:AUTO:END -->"
 MANIFEST_VERSION = 1
 CONTROL_FILES = {".DS_Store", "desktop.ini", "Thumbs.db"}
-LOCAL_EDIT_SUFFIX = ".local-edit.bak"
 CODE_RE = re.compile(r"([A-Z]{2,10}\d{3,}[A-Z]?)")
+CONFLICTS_DIRNAME = "conflicts"
 
 # Pull-outcome signals, verified against moodle-dl 2.3.x default-verbosity output.
 # - "is no longer available online": moodle_service.py WARNING (swallowed by -q)
@@ -40,41 +52,81 @@ _SECRET_ASSIGN = re.compile(
     r"(\s*[:=]\s*)(\"[^\"]*\"|'[^']*'|[^\s,;]+)"
 )
 
-class ConfigError(ValueError): pass
-class SyncBusyError(RuntimeError): pass
+class MirrorError(Exception):
+    """Base for classified mirror failures (each branch gets its own next step)."""
+
+
+class ConfigError(MirrorError, ValueError):
+    """Bad config content: paths, mappings, mirror_folder. Fix the JSON."""
+
+
+class MirrorStateError(MirrorError, RuntimeError):
+    """State/integrity problems: corrupt manifest, bad last-run, broken markers."""
+
+
+class MirrorEnvError(MirrorError, RuntimeError):
+    """Environment problems: missing dirs, locks, permissions."""
+
+
+class SyncBusyError(MirrorEnvError):
+    """Another sync/download holds the lock."""
 
 @dataclass(frozen=True)
 class Config:
-    source_root: Path; vault_root: Path; state_dir: Path; changelog: Path
-    mappings: dict; mirror_folder: str = "99 Moodle Mirror"
+    source_root: Path
+    vault_root: Path
+    state_dir: Path
+    changelog: Path
+    mappings: dict
+    mirror_folder: str = "99 Moodle Mirror"
     index_filename: str = "Moodle Mirror Index.md"
-    downloader: Path | None = None; pull_retries: int = 3; pull_retry_seconds: int = 30
+    downloader: Path | None = None
+    pull_retries: int = 3
+    pull_retry_seconds: int = 30
+
 
 @dataclass
 class SyncResult:
-    started_at: str; finished_at: str = ""
-    added: int = 0; updated: int = 0; restored: int = 0; withdrawn: int = 0
-    conflicted: int = 0; adopted: int = 0; unchanged: int = 0
+    started_at: str
+    finished_at: str = ""
+    added: int = 0
+    updated: int = 0
+    restored: int = 0
+    withdrawn: int = 0
+    conflicted: int = 0
+    adopted: int = 0
+    unchanged: int = 0
     scanned_courses: list = field(default_factory=list)
     unmapped_courses: list = field(default_factory=list)
     duplicate_courses: list = field(default_factory=list)
     missing_courses: list = field(default_factory=list)
+    skipped_symlinks: int = 0
     events: list = field(default_factory=list)
-    def as_dict(self):
-        d = asdict(self); d["status"] = "success"; return d
 
-def _now(): return datetime.now().astimezone().isoformat(timespec="seconds")
+    def as_dict(self):
+        d = asdict(self)
+        d["status"] = "success"
+        return d
+
+
+def _now():
+    return datetime.now().astimezone().isoformat(timespec="seconds")
+
 
 def _rp(base: Path, v: str, f: str) -> Path:
-    if not isinstance(v, str) or not v.strip(): raise ConfigError(f"{f} must be non-empty")
-    p = Path(v).expanduser(); return p if p.is_absolute() else (base / p).resolve()
+    if not isinstance(v, str) or not v.strip():
+        raise ConfigError(f"{f} must be non-empty")
+    p = Path(v).expanduser()
+    return p if p.is_absolute() else (base / p).resolve()
 
 def _rel_name(value, field: str, *, single: bool = False) -> str:
     """Vault-relative name: no absolute, no '.'/'..' components."""
     if not isinstance(value, str) or not value.strip():
         raise ConfigError(f"{field} must be a non-empty relative path")
     path = Path(value.strip())
-    if path.is_absolute() or not path.parts or any(p in (".", "..") for p in path.parts):
+    if not path.parts:
+        raise ConfigError(f"{field}: got {value!r} — name a real folder, not '.' or empty")
+    if path.is_absolute() or any(p in (".", "..") for p in path.parts):
         raise ConfigError(f"{field} must stay inside the configured vault")
     if single and len(path.parts) != 1:
         raise ConfigError(f"{field} must be a single path component")
@@ -86,15 +138,18 @@ def _overlaps(a: Path, b: Path) -> bool:
 
 def load_config(path) -> Config:
     cp = Path(path).expanduser().resolve()
-    try: raw = json.loads(cp.read_text(encoding="utf-8"))
-    except FileNotFoundError as e: raise ConfigError(f"config not found: {cp}") from e
+    try:
+        raw = json.loads(cp.read_text(encoding="utf-8"))
+    except FileNotFoundError as e:
+        raise ConfigError(f"config not found: {cp}") from e
     base = cp.parent
     src = _rp(base, raw.get("source_root", ""), "source_root")
     vault = _rp(base, raw.get("vault_root", ""), "vault_root")
     state = _rp(base, raw.get("state_dir", str(src / ".moodle-local-sync")), "state_dir")
     log = _rp(base, raw.get("changelog", str(vault / "Moodle Sync Updates.md")), "changelog")
     mp = raw.get("mappings")
-    if not isinstance(mp, dict) or not mp: raise ConfigError("mappings must be non-empty object")
+    if not isinstance(mp, dict) or not mp:
+        raise ConfigError("mappings must be non-empty object")
     seen: dict[str, str] = {}
     clean_mp: dict[str, str] = {}
     for k, v in mp.items():
@@ -129,22 +184,63 @@ def load_config(path) -> Config:
     return Config(src, vault, state, log, clean_mp, mirror_folder, index_filename,
                   dl, int(raw.get("pull_retries", 3)), int(raw.get("pull_retry_seconds", 30)))
 def _code(name: str):
-    m = CODE_RE.search(name); return m.group(1) if m else None
+    m = CODE_RE.search(name)
+    return m.group(1) if m else None
+
+def _default_text_mode():
+    um = os.umask(0)
+    os.umask(um)
+    return 0o644 & ~um
+
 
 def _atext(p: Path, t: str):
     p.parent.mkdir(parents=True, exist_ok=True)
-    fd, tn = tempfile.mkstemp(prefix=f".{p.name}.tmp-", dir=str(p.parent)); os.close(fd)
+    fd, tn = tempfile.mkstemp(prefix=f".{p.name}.tmp-", dir=str(p.parent))
+    os.close(fd)
     tmp = Path(tn)
     try:
-        tmp.write_text(t, encoding="utf-8"); os.replace(tmp, p)
-    finally: tmp.unlink(missing_ok=True)
+        with tmp.open("w", encoding="utf-8") as handle:
+            handle.write(t)
+            handle.flush()
+            os.fsync(handle.fileno())
+        # mkstemp yields 0600; text products (index, changelog, manifest)
+        # follow the process umask like a normal editor save. _acopy keeps
+        # source permissions untouched (deliberate, do not "fix" it here).
+        os.chmod(tmp, _default_text_mode())
+        os.replace(tmp, p)
+    finally:
+        tmp.unlink(missing_ok=True)
 
 def _acopy(s: Path, d: Path):
     d.parent.mkdir(parents=True, exist_ok=True)
-    fd, tn = tempfile.mkstemp(prefix=".mirror-", dir=str(d.parent)); os.close(fd)
+    fd, tn = tempfile.mkstemp(prefix=".mirror-", dir=str(d.parent))
+    os.close(fd)
     tmp = Path(tn)
-    try: shutil.copy2(s, tmp); os.replace(tmp, d)
-    finally: tmp.unlink(missing_ok=True)
+    try:
+        shutil.copy2(s, tmp)
+        os.replace(tmp, d)
+    finally:
+        tmp.unlink(missing_ok=True)
+
+def _conflict_backup(state_dir: Path, code: str, rel: str, current_mirror: Path) -> str:
+    """Shelve the locally-edited mirror copy under state_dir/conflicts/.
+
+    Returns the state-relative backup path for the changelog. The mirror tree
+    itself stays clean of *.bak files. Pre-existing legacy *.local-edit.bak
+    files are left untouched."""
+    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    dest = state_dir / CONFLICTS_DIRNAME / code / (rel + f".{stamp}.bak")
+    if dest.exists():
+        i = 1
+        while True:
+            cand = state_dir / CONFLICTS_DIRNAME / code / (rel + f".{stamp}.{i}.bak")
+            if not cand.exists():
+                dest = cand
+                break
+            i += 1
+    _acopy(current_mirror, dest)
+    return dest.relative_to(state_dir).as_posix()
+
 
 def _within(parent: Path, child: Path) -> bool:
     pr, cr = parent.resolve(), child.resolve()
@@ -152,8 +248,10 @@ def _within(parent: Path, child: Path) -> bool:
 
 def _same(a: Path, b: Path) -> bool:
     sa, sb = a.stat(), b.stat()
-    if sa.st_size == sb.st_size and sa.st_mtime_ns == sb.st_mtime_ns: return True
-    if sa.st_size != sb.st_size: return False
+    if sa.st_size == sb.st_size and sa.st_mtime_ns == sb.st_mtime_ns:
+        return True
+    if sa.st_size != sb.st_size:
+        return False
     return filecmp.cmp(a, b, shallow=False)
 
 def _link(rel: str) -> str:
@@ -165,34 +263,55 @@ def _index(code, src_name, when, files) -> str:
     wd = sorted(p for p, i in files.items() if i["status"] == "withdrawn")
     L = [f"> Moodle source: **{src_name}** (`{code}`)", f"> Last sync: {when}", "",
          f"## Current materials ({len(cur)})"]
-    grp = None
+    # Group root-level files first under one heading, then per top folder.
+    # (Ordered dict: each group title appears exactly once.)
+    groups: dict[str, list[str]] = {}
     for r in cur:
         top = Path(r).parts[0] if "/" in r else "Course root"
-        if top != grp: L += ["", f"### {top}"]; grp = top
-        L.append(f"- {_link(r)}")
+        groups.setdefault(top, []).append(r)
+    ordered = (["Course root"] if "Course root" in groups else []) + \
+              sorted(g for g in groups if g != "Course root")
+    for top in ordered:
+        L += ["", f"### {top}"]
+        L += [f"- {_link(r)}" for r in groups[top]]
     L += ["", f"## Retained after Moodle removal ({len(wd)})"]
     for r in wd:
         L.append(f"- {_link(r)} — gone from source since {files[r].get('withdrawn_at','?')}")
     return "\n".join(L)
 
-def _write_index(p: Path, code, src, when, files):
-    auto = _index(code, src, when, files); block = f"{AUTO_START}\n{auto}\n{AUTO_END}"
+def _write_index(p: Path, code, src, when, files) -> None:
+    auto = _index(code, src, when, files)
+    block = f"{AUTO_START}\n{auto}\n{AUTO_END}"
     if p.exists():
-        ex = p.read_text(encoding="utf-8"); s, e = ex.find(AUTO_START), ex.find(AUTO_END)
-        merged = ex[:s] + block + ex[e+len(AUTO_END):] if s != -1 and e > s else block + "\n\n" + ex
-    else: merged = f"# Moodle Mirror Index\n\n{block}\n\n## My notes\n"
+        existing = p.read_text(encoding="utf-8")
+        starts = existing.count(AUTO_START)
+        ends = existing.count(AUTO_END)
+        if (starts, ends) != (1, 1):
+            raise MirrorStateError(
+                f"index markers broken in {p} (START x{starts}, END x{ends}, want 1 each): "
+                "user text may contain a stray marker. Remove the extra AUTO block "
+                "(keep handwritten notes), then re-run sync. Nothing was overwritten.")
+        s, e = existing.find(AUTO_START), existing.find(AUTO_END)
+        merged = existing[:s] + block + existing[e + len(AUTO_END):]
+    else:
+        merged = f"# Moodle Mirror Index\n\n{block}\n\n## My notes\n"
     _atext(p, merged.rstrip() + "\n")
 
 @contextmanager
 def _lock(state: Path):
-    state.mkdir(parents=True, exist_ok=True); h = (state / "sync.lock").open("a+")
+    state.mkdir(parents=True, exist_ok=True)
+    h = (state / "sync.lock").open("a+")
     try:
-        try: fcntl.flock(h.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError as e: raise SyncBusyError("another sync is running") from e
+        try:
+            fcntl.flock(h.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as e:
+            raise SyncBusyError("another sync is running") from e
         yield
     finally:
-        try: fcntl.flock(h.fileno(), fcntl.LOCK_UN)
-        finally: h.close()
+        try:
+            fcntl.flock(h.fileno(), fcntl.LOCK_UN)
+        finally:
+            h.close()
 
 def _manifest(p: Path):
     """Load manifest. Returns (manifest, reset_note).
@@ -210,12 +329,12 @@ def _manifest(p: Path):
         try:
             p.rename(bak)
         except OSError as ee:
-            raise RuntimeError(f"manifest unreadable and cannot back it up: {ee}") from ee
+            raise MirrorStateError(f"manifest unreadable and cannot back it up: {ee}") from ee
         note = (f"manifest was corrupt ({type(e).__name__}), preserved as "
                 f"{bak.name}; restarting history — mirrored files count as adopted")
         return {"version": MANIFEST_VERSION, "courses": {}}, note
     if m.get("version") != MANIFEST_VERSION or not isinstance(m.get("courses"), dict):
-        raise RuntimeError(
+        raise MirrorStateError(
             f"unsupported manifest in {p} (version {m.get('version')!r}). "
             "Recovery: inspect it, then either restore from backup or move it aside "
             f"(e.g. mv {p.name} {p.name}.bak) and re-run sync; mirrored files will "
@@ -223,8 +342,10 @@ def _manifest(p: Path):
     return m, None
 
 def synchronize(cfg: Config) -> SyncResult:
-    if not cfg.source_root.is_dir(): raise RuntimeError(f"source_root missing: {cfg.source_root}")
-    if not cfg.vault_root.is_dir(): raise RuntimeError(f"vault_root missing: {cfg.vault_root}")
+    if not cfg.source_root.is_dir():
+        raise MirrorEnvError(f"source_root missing: {cfg.source_root}")
+    if not cfg.vault_root.is_dir():
+        raise MirrorEnvError(f"vault_root missing: {cfg.vault_root}")
     if (cfg.source_root / "running.lock").exists():
         raise SyncBusyError("download still running; mirror not started")
     with _lock(cfg.state_dir):
@@ -237,80 +358,128 @@ def synchronize(cfg: Config) -> SyncResult:
         for it in sorted(cfg.source_root.iterdir(), key=lambda x: x.name.casefold()):
             if it.is_dir():
                 c = _code(it.name)
-                if c: by_code.setdefault(c, []).append(it)
+                if c:
+                    by_code.setdefault(c, []).append(it)
         for code in sorted(by_code):
             if len(by_code[code]) > 1:
-                res.duplicate_courses.append(code); continue
-            src_course = by_code[code][0]; dest_name = cfg.mappings.get(code)
+                res.duplicate_courses.append(code)
+                continue
+            src_course = by_code[code][0]
+            dest_name = cfg.mappings.get(code)
             if dest_name is None:
-                res.unmapped_courses.append(src_course.name); continue
+                res.unmapped_courses.append(src_course.name)
+                continue
             res.scanned_courses.append(code)
             course_root = (cfg.vault_root / dest_name).resolve()
             if not _within(cfg.vault_root, course_root):
-                raise RuntimeError(f"course destination escapes vault: {dest_name}")
+                raise ConfigError(f"course destination escapes vault: {dest_name}")
             if _overlaps(course_root, cfg.source_root):
-                raise RuntimeError(f"course destination overlaps source_root: {dest_name}")
+                raise ConfigError(f"course destination overlaps source_root: {dest_name}")
             course_root.mkdir(parents=True, exist_ok=True)
             mroot = (course_root / cfg.mirror_folder).resolve()
             if not _within(course_root, mroot):
-                raise RuntimeError("mirror folder escapes course destination")
+                raise ConfigError("mirror folder escapes course destination")
             if _overlaps(mroot, cfg.source_root):
-                raise RuntimeError("mirror root must not overlap source_root")
+                raise ConfigError("mirror root must not overlap source_root")
             if mroot.exists() and mroot.is_symlink():
-                raise RuntimeError("mirror folder must not be a symbolic link")
+                raise MirrorEnvError("mirror folder must not be a symbolic link")
             mroot.mkdir(parents=True, exist_ok=True)
-            prev = courses.get(code, {}).get("files", {}); nxt: dict = {}
+            prev = courses.get(code, {}).get("files", {})
+            nxt: dict = {}
+            for link in sorted(src_course.rglob("*")):
+                if link.is_symlink():
+                    rel = link.relative_to(src_course).as_posix()
+                    res.skipped_symlinks += 1
+                    res.events.append({
+                        "type": "skipped-symlink", "course": code, "path": rel,
+                    })
             srcs = sorted((x for x in src_course.rglob("*") if x.is_file() and not x.is_symlink()
                            and x.name not in CONTROL_FILES),
                           key=lambda x: x.relative_to(src_course).as_posix().casefold())
             for s in srcs:
                 rel = s.relative_to(src_course).as_posix()
-                if Path(rel).is_absolute() or ".." in Path(rel).parts: continue
+                if Path(rel).is_absolute() or ".." in Path(rel).parts:
+                    continue
                 d = mroot / rel
-                if not _within(mroot, d.parent): continue
-                old = prev.get(rel); ev = None; st = s.stat()
+                if not _within(mroot, d.parent):
+                    continue
+                old = prev.get(rel)
+                ev = None
+                st = s.stat()
+                backup_rel = None
                 if not d.exists():
-                    _acopy(s, d); ev = "restored" if old and old.get("status") == "withdrawn" else ("updated" if old else "added")
+                    _acopy(s, d)
+                    if old and old.get("status") == "withdrawn":
+                        ev = "restored"
+                    elif old:
+                        ev = "updated"
+                    else:
+                        ev = "added"
                 elif not _same(s, d):
                     edited = old and old.get("mtime_ns") is not None and d.stat().st_mtime_ns != old["mtime_ns"]
                     if edited or old is None:
-                        bak = d.with_name(d.name + LOCAL_EDIT_SUFFIX); i = 1
-                        while bak.exists(): bak = d.with_name(f"{d.name}{LOCAL_EDIT_SUFFIX}.{i}"); i += 1
-                        _acopy(d, bak); _acopy(s, d); ev = "conflicted"
+                        backup_rel = _conflict_backup(cfg.state_dir, code, rel, d)
+                        _acopy(s, d)
+                        ev = "conflicted"
                     else:
-                        _acopy(s, d); ev = "restored" if old.get("status") == "withdrawn" else "updated"
+                        _acopy(s, d)
+                        ev = ("restored"
+                              if old.get("status") == "withdrawn"
+                              else "updated")
                 elif old is None:
                     res.adopted += 1
                     res.events.append({"type": "adopted", "course": code, "path": rel})
-                elif old.get("status") == "withdrawn": ev = "restored"
-                else: res.unchanged += 1
+                elif old.get("status") == "withdrawn":
+                    ev = "restored"
+                else:
+                    res.unchanged += 1
                 nxt[rel] = {"status": "current", "size": st.st_size, "mtime_ns": st.st_mtime_ns,
                             "first_seen": old.get("first_seen") if old else res.started_at, "last_seen": res.started_at}
-                if ev: setattr(res, ev, getattr(res, ev) + 1); res.events.append({"type": ev, "course": code, "path": rel})
+                if ev:
+                    setattr(res, ev, getattr(res, ev) + 1)
+                    evt = {"type": ev, "course": code, "path": rel}
+                    if backup_rel:
+                        evt["backup"] = backup_rel
+                    res.events.append(evt)
             for rel, old in prev.items():
-                if rel in nxt: continue
+                if rel in nxt:
+                    continue
                 r = dict(old)
                 if old.get("status") != "withdrawn":
-                    r["withdrawn_at"] = res.started_at; res.withdrawn += 1
+                    r["withdrawn_at"] = res.started_at
+                    res.withdrawn += 1
                     res.events.append({"type": "withdrawn", "course": code, "path": rel})
-                r["status"] = "withdrawn"; nxt[rel] = r
+                r["status"] = "withdrawn"
+                nxt[rel] = r
             courses[code] = {"source_name": src_course.name, "destination": dest_name,
                              "last_scanned": res.started_at, "files": nxt}
             _write_index(mroot / cfg.index_filename, code, src_course.name, res.started_at, nxt)
         for code in sorted(courses):
-            if code not in by_code: res.missing_courses.append(code)
-        res.finished_at = _now(); mp["last_successful_sync"] = res.finished_at
+            if code not in by_code:
+                res.missing_courses.append(code)
+        res.finished_at = _now()
+        mp["last_successful_sync"] = res.finished_at
         if reset_note:
             res.events.append({"type": "note", "course": "-", "path": reset_note})
         lines = [f"\n## Sync {res.finished_at}",
-                 f"- Added {res.added} · Updated {res.updated} · Restored {res.restored} · Withdrawn {res.withdrawn} · Conflicted {res.conflicted} · Adopted {res.adopted} · Unchanged {res.unchanged}"]
+                 f"- Added {res.added} · Updated {res.updated} · Restored {res.restored} · "
+                 f"Withdrawn {res.withdrawn} · Conflicted {res.conflicted} · "
+                 f"Adopted {res.adopted} · Unchanged {res.unchanged}"]
+        if res.skipped_symlinks:
+            lines.append(f"- Skipped {res.skipped_symlinks} symlink(s) "
+                         "(not followed, listed as skipped-symlink events)")
         for e in res.events:
             if e["type"] == "note":
                 lines.append(f"- ⚠️ {e['path']}")
+            elif e["type"] == "conflicted" and e.get("backup"):
+                lines.append(f"- conflicted `{e['course']}` {e['path']} "
+                             f"(local copy kept at state:{e['backup']})")
             else:
                 lines.append(f"- {e['type']} `{e['course']}` {e['path']}")
-        for u in res.unmapped_courses: lines.append(f"- UNMAPPED {u}")
-        for d_ in res.duplicate_courses: lines.append(f"- DUPLICATE {d_} (skipped)")
+        for u in res.unmapped_courses:
+            lines.append(f"- UNMAPPED {u}")
+        for d_ in res.duplicate_courses:
+            lines.append(f"- DUPLICATE {d_} (skipped)")
         _atext(cfg.state_dir / "manifest.json", json.dumps(mp, ensure_ascii=False, indent=2) + "\n")
         _atext(cfg.state_dir / "last-run.json", json.dumps(res.as_dict(), ensure_ascii=False, indent=2) + "\n")
         old_log = cfg.changelog.read_text(encoding="utf-8") if cfg.changelog.exists() else "# Moodle Sync Updates\n"
@@ -325,6 +494,10 @@ def _next_hint(cfg: Config, result: dict | None = None, *, failed: str | None = 
         return "要拉取：在 moodle-mirror.json 填 downloader，并完成 moodle-sync/config.json；只要映射：改跑 sync"
     if failed == "config":
         return "按上方报错改 moodle-mirror.json（路径 / mappings / mirror_folder），再 doctor"
+    if failed == "state":
+        return "状态文件异常：按上方指引检查 state_dir（损坏文件已自动留底），恢复后重跑 sync"
+    if failed == "env":
+        return "运行环境问题（目录 / 锁 / 权限）：按上方报错处理后重试"
     if failed == "busy":
         return "等待当前下载结束；确认无 moodle-dl 进程后再删 running.lock"
     if result:
@@ -333,7 +506,8 @@ def _next_hint(cfg: Config, result: dict | None = None, *, failed: str | None = 
         if result.get("duplicate_courses"):
             return "下载树里同课号多文件夹，先理清 moodle-sync 后再 sync"
         if result.get("conflicted", 0):
-            return "打开对应 *.local-edit.bak 对比本地修改；确认后可继续用 Obsidian 看 99 Moodle Mirror"
+            return ("打开更新记录找 state:conflicts/ 下的对应备份，对比本地修改；"
+                    "确认后可继续用 Obsidian 看 99 Moodle Mirror")
         if result.get("added", 0) or result.get("updated", 0) or result.get("restored", 0):
             return "在 Obsidian 打开各课「99 Moodle Mirror」；若要全文搜 Word/PPT，再说「生成伴生 md」"
         return "本轮无文件变化。有新课件时再 run；只要重映缓存则 sync"
@@ -383,6 +557,9 @@ def _print_guide(cfg: Config, *, mode: str, result: dict | None = None, failed: 
             print(f"   · UNMAPPED {u}")
         for d in result.get("duplicate_courses") or []:
             print(f"   · DUPLICATE {d}")
+        if result.get("skipped_symlinks", 0):
+            print(f"   · SKIPPED-SYMLINK x{result['skipped_symlinks']} "
+                  "(symlink 未跟随，详情见更新记录)")
     print(f"👉 下一步：{_next_hint(cfg, result, failed=failed)}")
 
 def _redact(text: str) -> str:
@@ -433,12 +610,34 @@ def _dl_config_status(cfg: Config) -> tuple[bool, list[str]]:
     return (not reasons), reasons
 
 
-def _doctor(cfg: Config) -> int:
+def _prune_conflicts(state_dir: Path, days: int) -> tuple[int, int]:
+    """Delete conflict backups older than DAYS. Returns (removed, kept)."""
+    root = state_dir / CONFLICTS_DIRNAME
+    if not root.is_dir():
+        return 0, 0
+    cutoff = time.time() - days * 86400
+    removed, kept = 0, 0
+    for p in sorted(root.rglob("*")):
+        if not p.is_file() or p.is_symlink():
+            continue
+        if p.stat().st_mtime < cutoff:
+            p.unlink()
+            removed += 1
+        else:
+            kept += 1
+    return removed, kept
+
+
+def _doctor(cfg: Config, prune_days: int | None = None) -> int:
+    if prune_days is not None:
+        removed, kept = _prune_conflicts(cfg.state_dir, prune_days)
+        print(f"pruned {removed} conflict backup(s) older than {prune_days}d, kept {kept}")
     ok = True
     for good, msg in [(cfg.source_root.is_dir(), f"source_root: {cfg.source_root}"),
                       (cfg.vault_root.is_dir(), f"vault_root: {cfg.vault_root}"),
                       (bool(cfg.mappings), f"mappings: {len(cfg.mappings)}")]:
-        print(f"{'OK' if good else 'ISSUE'}  {msg}"); ok &= good
+        print(f"{'OK' if good else 'ISSUE'}  {msg}")
+        ok &= good
     busy = (cfg.source_root / "running.lock").exists()
     print(f"{'BUSY' if busy else 'OK'}  download lock")
     if busy:
@@ -461,12 +660,28 @@ def _doctor(cfg: Config) -> int:
     print(f"{'OK  run READY' if run_ready else 'ISSUE  run NOT READY'}")
     for r in run_reasons:
         print(f"   · {r}")
+    # --- dependency pins (informational; sync itself needs none) ---
+    req = Path(__file__).resolve().parent.parent / "requirements.txt"
+    if not req.is_file():
+        print("ISSUE  requirements.txt missing next to scripts/ (dependency pins unknown)")
+    else:
+        for lib, label in (("docx", "python-docx"), ("pptx", "python-pptx")):
+            try:
+                __import__(lib)
+                print(f"OK  {label}: importable (companions render full content)")
+            except ImportError:
+                print(f"ISSUE  {label}: not importable "
+                      "(companions degrade to link-only stubs; pip install -r requirements.txt)")
     # --- credential hygiene: warn, never write ---
     if (cfg.vault_root / ".git").exists() and _within(cfg.vault_root, cfg.source_root):
         print("ISSUE  vault is a git repo and the download cache (with credentials) "
               "lives inside it")
         print(f"   · keep secrets out of git: printf '*\\n' > {cfg.source_root / '.gitignore'}")
         print("   · or point source_root outside the vault (recommended) and re-run doctor")
+    if _within(cfg.vault_root, cfg.source_root):
+        print("HINT  download cache lives inside the vault: Obsidian will index it "
+              "twice (cache + mirror). Settings → Files & Links → Excluded files → "
+              f"add {cfg.source_root.relative_to(cfg.vault_root).as_posix()}/")
     if busy:
         _print_guide(cfg, mode="doctor", failed="busy")
     elif not ok:
@@ -528,54 +743,98 @@ def _pull(cfg: Config) -> tuple[int, str, str]:
         return 0, "unverified", ver_note + "; signal patterns pinned to moodle-dl 2.3.x"
     return 0, "ok", ver_note
 
+def _validated_status(p: Path) -> dict:
+    """Load last-run.json or raise a user-actionable error (never a traceback)."""
+    try:
+        d = json.loads(p.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as e:
+        raise MirrorStateError(
+            f"last-run.json unreadable ({type(e).__name__}); state may be corrupt. "
+            f"Inspect {p}, restore from backup, or re-run sync "
+            "(mirrored files are adopted, never deleted).") from e
+    if not isinstance(d, dict):
+        raise MirrorStateError(f"last-run.json root must be an object: {p}")
+    missing = [k for k in ("added", "updated", "restored", "withdrawn",
+                           "conflicted", "adopted", "unchanged",
+                           "finished_at") if k not in d]
+    if missing:
+        raise MirrorStateError(
+            f"last-run.json missing keys {missing}; state may be from an older "
+            "version. Re-run sync to rewrite it.")
+    return d
+
+
+def _status_body(cfg: Config, a) -> int:
+    p = cfg.state_dir / "last-run.json"
+    if not p.exists():
+        print("no completed sync yet")
+        print(f"📁 缓存（①）：{cfg.source_root}")
+        print(f"📁 笔记库根：{cfg.vault_root}")
+        print("👉 下一步：先 run 或 sync 完成首轮同步")
+        return 1
+    try:
+        d = _validated_status(p)
+    except MirrorStateError as e:
+        print(f"mirror.py: {e}", file=sys.stderr)
+        return 2
+    if a.json:
+        out_d = dict(d)
+        evs = out_d.get("events", [])
+        if a.events and len(evs) > a.events:
+            out_d["events"] = evs[:a.events]
+            out_d["events_truncated"] = f"showing {a.events} of {len(evs)} (use --events 0 for all)"
+        print(json.dumps(out_d, ensure_ascii=False, indent=2))
+    else:
+        print(f"+{d['added']} added ~{d['updated']} updated, {d['restored']} restored, "
+              f"{d['withdrawn']} withdrawn, {d.get('conflicted', 0)} conflicted, "
+              f"{d.get('adopted', 0)} adopted, {d['unchanged']} unchanged @ {d['finished_at']}")
+        _print_guide(cfg, mode="sync", result=d)
+    return 0
+
+
+def _setup_logging(verbose: bool = False, log_file: str | None = None):
+    """Diagnostics channel. Human summary stays on stdout prints; this is the
+    second observability leg (pull verdicts, state resets). Never silences."""
+    import logging
+    handlers = [logging.StreamHandler(sys.stderr)]
+    if log_file:
+        handlers.append(logging.FileHandler(log_file, encoding="utf-8"))
+    logging.basicConfig(level=logging.DEBUG if verbose else logging.INFO,
+                        handlers=handlers,
+                        format="%(asctime)s %(levelname)s %(message)s", force=True)
+    return logging.getLogger("moodle-mirror")
+
+
 def main(argv=None) -> int:
-    ap = argparse.ArgumentParser(prog="mirror.py"); ap.add_argument("--config", required=True, type=Path)
+    ap = argparse.ArgumentParser(prog="mirror.py")
+    ap.add_argument("--config", required=True, type=Path)
+    ap.add_argument("--log-file", default=None, help="also write diagnostics here")
+    ap.add_argument("--verbose", action="store_true", help="debug-level diagnostics")
     sp = ap.add_subparsers(dest="cmd", required=True)
-    sp.add_parser("doctor"); s = sp.add_parser("status"); s.add_argument("--json", action="store_true")
-    sp.add_parser("sync"); sp.add_parser("run")
+    sp.add_parser("doctor").add_argument(
+        "--prune-conflicts", type=int, metavar="DAYS", default=None,
+        help="delete conflict backups older than DAYS, then run checks")
+    s = sp.add_parser("status")
+    s.add_argument("--json", action="store_true")
+    s.add_argument("--events", type=int, default=50, metavar="N",
+        help="max events in --json output (0 = all); terminal always shows counts")
+    sp.add_parser("sync")
+    sp.add_parser("run")
     a = ap.parse_args(argv)
+    log = _setup_logging(verbose=a.verbose, log_file=a.log_file)
     cfg = None
     try:
         cfg = load_config(a.config)
-        if a.cmd == "doctor": return _doctor(cfg)
+        log.info("config loaded: %s (vault %s)", a.config, cfg.vault_root)
+        if a.cmd == "doctor":
+            return _doctor(cfg, prune_days=a.prune_conflicts)
         if a.cmd == "status":
-            p = cfg.state_dir / "last-run.json"
-            if not p.exists():
-                print("no completed sync yet")
-                print(f"📁 缓存（①）：{cfg.source_root}")
-                print(f"📁 笔记库根：{cfg.vault_root}")
-                print(f"👉 下一步：先 run 或 sync 完成首轮同步")
-                return 1
-            try:
-                d = json.loads(p.read_text(encoding="utf-8"))
-            except (OSError, ValueError) as e:
-                print(f"mirror.py: last-run.json unreadable ({type(e).__name__}); "
-                      f"state may be corrupt. Inspect {p}, restore from backup, or "
-                      "re-run sync (mirrored files are adopted, never deleted).",
-                      file=sys.stderr)
-                return 2
-            if not isinstance(d, dict):
-                print(f"mirror.py: last-run.json root must be an object: {p}",
-                      file=sys.stderr)
-                return 2
-            missing = [k for k in ("added", "updated", "restored", "withdrawn",
-                                   "conflicted", "adopted", "unchanged",
-                                   "finished_at") if k not in d]
-            if missing:
-                print(f"mirror.py: last-run.json missing keys {missing}; state may be "
-                      f"from an older version. Re-run sync to rewrite it.", file=sys.stderr)
-                return 2
-            print(json.dumps(d, ensure_ascii=False, indent=2) if a.json else
-                  f"+{d['added']} added ~{d['updated']} updated, {d['restored']} restored, "
-                  f"{d['withdrawn']} withdrawn, {d.get('conflicted',0)} conflicted, "
-                  f"{d.get('adopted',0)} adopted, {d['unchanged']} unchanged @ {d['finished_at']}")
-            if not a.json:
-                _print_guide(cfg, mode="sync", result=d)
-            return 0
+            return _status_body(cfg, a)
         mode = "run" if a.cmd == "run" else "sync"
         pull_note = None
         if a.cmd == "run":
             rc, verdict, note = _pull(cfg)
+            log.info("pull verdict=%s note=%s", verdict, note)
             if verdict == "failed":
                 print("pull failed; mirror unchanged", file=sys.stderr)
                 fail = "no_downloader" if cfg.downloader is None else "pull"
@@ -586,6 +845,11 @@ def main(argv=None) -> int:
                 print(f"⚠️ pull ran but completeness UNVERIFIED: {note}; "
                       "mirror proceeds, verify new files on Moodle manually.", file=sys.stderr)
         r = synchronize(cfg).as_dict()
+        log.info("sync done: added=%s updated=%s restored=%s withdrawn=%s conflicted=%s "
+                 "adopted=%s unchanged=%s skipped_symlinks=%s",
+                 r["added"], r["updated"], r["restored"], r["withdrawn"],
+                 r["conflicted"], r["adopted"], r["unchanged"],
+                 r.get("skipped_symlinks", 0))
         print(f"mirror done: +{r['added']} added ~{r['updated']} updated, {r['restored']} restored, "
               f"{r['withdrawn']} withdrawn, {r['conflicted']} conflicted, "
               f"{r['adopted']} adopted, {r['unchanged']} unchanged")
@@ -594,14 +858,28 @@ def main(argv=None) -> int:
             _atext(cfg.changelog, clog.rstrip() + f"\n- ⚠️ pull completeness UNVERIFIED: {pull_note}\n")
         _print_guide(cfg, mode=mode, result=r, pull_note=pull_note)
         return 0
-    except (ConfigError, RuntimeError, OSError) as e:
+    except SyncBusyError as e:
         print(f"mirror.py: {e}", file=sys.stderr)
         if cfg is not None:
-            fail = "busy" if isinstance(e, SyncBusyError) else "config"
-            _print_guide(cfg, mode=getattr(a, "cmd", "sync"), failed=fail)
+            _print_guide(cfg, mode=getattr(a, "cmd", "sync"), failed="busy")
+        return 3
+    except ConfigError as e:
+        print(f"mirror.py: {e}", file=sys.stderr)
+        if cfg is not None:
+            _print_guide(cfg, mode=getattr(a, "cmd", "sync"), failed="config")
         else:
             print("👉 下一步：检查 --config 路径与 moodle-mirror.json 是否可读")
-        return 3 if isinstance(e, SyncBusyError) else 2
+        return 2
+    except MirrorStateError as e:
+        print(f"mirror.py: {e}", file=sys.stderr)
+        if cfg is not None:
+            _print_guide(cfg, mode=getattr(a, "cmd", "sync"), failed="state")
+        return 2
+    except (MirrorEnvError, OSError) as e:
+        print(f"mirror.py: {e}", file=sys.stderr)
+        if cfg is not None:
+            _print_guide(cfg, mode=getattr(a, "cmd", "sync"), failed="env")
+        return 2
 
 if __name__ == "__main__":
     raise SystemExit(main())

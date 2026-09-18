@@ -8,7 +8,7 @@
 
 <p align="center">
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="License: MIT"></a>
-  <a href="https://python.org"><img src="https://img.shields.io/badge/Python-3.10%2B-brightgreen.svg" alt="Python 3.10+"></a>
+  <a href="https://python.org"><img src="https://img.shields.io/badge/Python-3.9%2B-brightgreen.svg" alt="Python 3.9+"></a>
   <a href="https://obsidian.md"><img src="https://img.shields.io/badge/Obsidian-Compatible-purple.svg" alt="Obsidian Compatible"></a>
   <img src="https://img.shields.io/badge/Platform-macOS%20%7C%20Linux-lightgrey.svg" alt="Platform">
 </p>
@@ -32,7 +32,7 @@
        │   ① 本地拉取缓存区     │  moodle-sync/ (moodle-dl 增量同步)
        │  (moodle_state.db)    │  保存原始文件，离线随时可用
        └───────────┬───────────┘
-                   │ (同构映射 / 覆盖前备份 .local-edit.bak)
+                   │ (同构映射 / 冲突备份进 state_dir/conflicts)
                    ▼
        ┌───────────────────────┐
        │   ② Obsidian 镜像区   │  <Vault>/<Course>/99 Moodle Mirror/
@@ -66,7 +66,7 @@ export SKILL_DIR=/path/to/moodle-to-obsidian VAULT=/path/to/your/vault
 
 ### 1. 安装核心依赖
 ```bash
-pip install moodle-dl python-docx python-pptx
+pip install -r requirements.txt  # moodle-dl + python-docx + python-pptx（已钉版本范围）
 ```
 
 ### 2. 初始化配置与浏览器一次性登录
@@ -231,7 +231,7 @@ python3 "$SKILL_DIR/scripts/to_markdown.py" "$VAULT/<Course Folder>"
 |---|---|
 | 100% 保持 Moodle 原始文件夹结构 | 绝不替你主观删改内容或代写作业 |
 | 增量更新；线上撤回的文件本地始终安全留底 | 绝不把你的登录凭证上传至第三方服务器 |
-| 遇到冲突时自动先将本地修改备份为 `*.local-edit.bak` | 绝不常驻后台偷跑占用资源 |
+| 遇到冲突时先将本地修改收进 `state_dir/conflicts/`（镜像目录保持干净） | 绝不常驻后台偷跑占用资源 |
 | 凭证权限收紧为 `chmod 600` 且终端输出严格脱敏 | 绝不在同步管道中擅自调用 LLM 改名重组 |
 
 ---

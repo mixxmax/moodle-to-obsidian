@@ -16,7 +16,12 @@ Usage:
   python3 mcp_query.py --config moodle-sync/config.json grades --course-id 12345
   python3 mcp_query.py --config moodle-sync/config.json briefing --mcp-dir /path/to/moodle-mcp
 """
-import argparse, json, os, re, sys
+import argparse
+import inspect
+import json
+import os
+import re
+import sys
 from pathlib import Path
 
 TOOLS_NOARG = {"deadlines": "get_upcoming_deadlines", "overdue": "get_overdue_assignments",
@@ -28,15 +33,49 @@ TOOLS_COURSE = {"assignments": "get_assignments", "grades": "get_grades",
                 "progress": "get_course_progress", "health": "get_course_health",
                 "announcements": "get_course_announcements"}
 
+ALL_TOOLS = set(TOOLS_NOARG) | set(TOOLS_COURSE)
+# Verified against the pinned vendor checkout (api.py signatures): only health
+# has a required courseid; the rest default to all-courses scope.
+COURSE_ID_REQUIRED = {"health"}
+
+
+def _call_with_course_id(fn, course_id):
+    """Bind --course-id using the INSTALLED function signature, not guesses."""
+    try:
+        params = list(inspect.signature(fn).parameters.values())
+    except (TypeError, ValueError):
+        params = []
+    positional = [p for p in params
+                  if p.kind in (p.POSITIONAL_ONLY, p.POSITIONAL_OR_KEYWORD)]
+    if not positional:
+        if course_id:
+            raise TypeError(f"{getattr(fn, '__name__', fn)} takes no course id")
+        return fn()
+    first = positional[0]
+    if not course_id:
+        if first.default is first.empty:
+            raise TypeError(f"{first.name} is required (pass --course-id)")
+        return fn()
+    name = (first.name or "").lower()
+    if "courseids" in name and name != "courseid":
+        return fn([int(course_id)])
+    if first.annotation is int or "courseid" in name:
+        return fn(int(course_id))
+    return fn(course_id)
+
 def _dl_config(path: Path) -> dict:
-    try: return json.loads(path.read_text(encoding="utf-8"))
-    except FileNotFoundError: return {}
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return {}
 
 def _env(cfg: dict) -> tuple[str, str]:
     domain = str(cfg.get("moodle_domain", "moodle.hku.hk")).strip().rstrip("/")
     path = str(cfg.get("moodle_path", "/"))
-    if not path.startswith("/"): path = "/" + path
-    if not path.endswith("/"): path += "/"
+    if not path.startswith("/"):
+        path = "/" + path
+    if not path.endswith("/"):
+        path += "/"
     return f"https://{domain}{path}webservice/rest/server.php", str(cfg.get("token", ""))
 
 def _redact_text(s: str, token: str) -> str:
@@ -48,10 +87,13 @@ def _redact_text(s: str, token: str) -> str:
                  r"\1[REDACTED]", out)
     return out
 
+_SECRET_KEYS = {"token", "wstoken", "password", "cookie", "privatetoken", "moodle_token"}
+
+
 def _redact_obj(obj, token: str):
     if isinstance(obj, dict):
         return {
-            k: ("[REDACTED]" if str(k).lower() in {"token", "wstoken", "password", "cookie", "privatetoken", "moodle_token"}
+            k: ("[REDACTED]" if str(k).lower() in _SECRET_KEYS
                 else _redact_obj(v, token))
             for k, v in obj.items()
         }
@@ -72,23 +114,31 @@ def main() -> int:
     cfg = _dl_config(Path(a.config).expanduser())
     url, token = _env(cfg)
     if not token:
-        print("no token in config; run save_token.py first", file=sys.stderr); return 2
-
-    if a.tool in TOOLS_COURSE and not a.course_id and a.tool in ("health",):
-        print("health needs --course-id", file=sys.stderr); return 2
+        print("no token in config; run save_token.py first", file=sys.stderr)
+        return 2
+    if a.tool not in ALL_TOOLS:
+        print(f"unknown tool: {a.tool} (valid: {', '.join(sorted(ALL_TOOLS))})",
+              file=sys.stderr)
+        return 2
 
     if not a.mcp_dir:
-        print("DRY-RUN (no --mcp-dir given; nothing executed)")
+        print("DRY-RUN (no --mcp-dir given: local args validated only, no Moodle call)")
+        if a.tool in COURSE_ID_REQUIRED and not a.course_id:
+            print(f"{a.tool} needs --course-id", file=sys.stderr)
+            return 2
         print(f"MOODLE_URL={url}")
         print("MOODLE_TOKEN=[REDACTED present]")
-        fn = TOOLS_NOARG.get(a.tool, TOOLS_COURSE.get(a.tool, a.tool))
-        print(f"planned call: moodle_mcp.server.{fn}({('courseid=' + a.course_id) if a.course_id else ''})")
+        fn = TOOLS_NOARG.get(a.tool, TOOLS_COURSE.get(a.tool))
+        scope = f"courseid={a.course_id}" if a.course_id else (
+            "all-courses scope" if a.tool in TOOLS_COURSE else "")
+        print(f"planned call: moodle_mcp.server.{fn}({scope})")
         print("Execute via: python3 mcp_query.py ... --mcp-dir /path/to/moodle-mcp")
         return 0
 
     src = Path(a.mcp_dir).expanduser() / "src"
     if not (src / "moodle_mcp" / "server.py").exists():
-        print(f"mcp checkout not found at {src}/moodle_mcp/server.py", file=sys.stderr); return 2
+        print(f"mcp checkout not found at {src}/moodle_mcp/server.py", file=sys.stderr)
+        return 2
     os.environ["MOODLE_URL"] = url
     os.environ["MOODLE_TOKEN"] = token
     sys.path.insert(0, str(src))
@@ -100,19 +150,24 @@ def main() -> int:
         try:
             from moodle_mcp import api as S
         except ImportError as e:
-            print(f"cannot import moodle_mcp from {src}: {e}", file=sys.stderr); return 2
+            print(f"cannot import moodle_mcp from {src}: {e}", file=sys.stderr)
+            return 2
     fn_name = TOOLS_NOARG.get(a.tool, TOOLS_COURSE.get(a.tool))
     if fn_name is None or not hasattr(S, fn_name):
-        print(f"unknown tool: {a.tool}", file=sys.stderr); return 2
+        print(f"unknown tool: {a.tool}", file=sys.stderr)
+        return 2
     fn = getattr(S, fn_name)
     try:
-        if a.tool in TOOLS_COURSE:
-            res = fn(int(a.course_id)) if a.course_id else (fn() if a.tool != "assignments" else fn(None))
-        else:
-            res = fn()
+        res = _call_with_course_id(fn, a.course_id)
+    except TypeError as e:
+        print(f"argument mismatch calling {fn_name}: {e} "
+              "(check --course-id against the installed moodle-mcp signature)",
+              file=sys.stderr)
+        return 2
     except Exception as e:
         msg = _redact_text(f"{type(e).__name__}: {str(e)[:200]}", token)
-        print(f"moodle API call failed: {msg}", file=sys.stderr); return 1
+        print(f"moodle API call failed: {msg}", file=sys.stderr)
+        return 1
     safe = _redact_obj(res, token)
     print(json.dumps(safe, ensure_ascii=False, indent=2, default=str))
     return 0

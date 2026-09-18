@@ -1,6 +1,4 @@
 """Regression locks: behaviors that must survive the P0/P1 refactor."""
-import json
-from pathlib import Path
 
 from conftest import run_cli, write_config
 
@@ -28,7 +26,7 @@ def test_withdraw_keeps_local_file(mirror, workdir):
     assert kept.exists()
 
 
-def test_local_edit_conflict_backs_up(mirror, workdir):
+def test_local_edit_conflict_shelved_outside_mirror(mirror, workdir):
     cfg = write_config(workdir["vault"] / "moodle-mirror.json")
     _sync(mirror, cfg)
     mirrored = workdir["vault"] / "Course COMP1111" / "99 Moodle Mirror" / "a.pdf"
@@ -36,7 +34,29 @@ def test_local_edit_conflict_backs_up(mirror, workdir):
     (workdir["cache"] / "COMP1111 Week 1 [2026]" / "a.pdf").write_bytes(b"REMOTE2")
     out = _sync(mirror, cfg)
     assert "1 冲突备份" in out
-    assert mirrored.with_name(mirrored.name + ".local-edit.bak").exists()
+    mroot = workdir["vault"] / "Course COMP1111" / "99 Moodle Mirror"
+    assert list(mroot.rglob("*.bak")) == []
+    shelved = list((workdir["state"] / "conflicts").rglob("*.bak"))
+    assert len(shelved) == 1 and shelved[0].read_bytes() == b"LOCAL"
+    log = (workdir["vault"] / "Log.md").read_text(encoding="utf-8")
+    assert "conflicts/" in log
+
+
+def test_prune_conflicts_by_age(mirror, workdir):
+    import os
+    import time
+    cfg = write_config(workdir["vault"] / "moodle-mirror.json")
+    old = workdir["state"] / "conflicts" / "COMP1111" / "a.pdf.20200101-000000.bak"
+    new = workdir["state"] / "conflicts" / "COMP1111" / "b.pdf.20990101-000000.bak"
+    old.parent.mkdir(parents=True, exist_ok=True)
+    old.write_bytes(b"o")
+    new.write_bytes(b"n")
+    ancient = time.time() - 40 * 86400
+    os.utime(old, (ancient, ancient))
+    rc, out, err = run_cli(mirror, "--config", str(cfg), "doctor", "--prune-conflicts", "30")
+    assert rc == 0
+    assert not old.exists() and new.exists()
+    assert "pruned 1" in out
 
 
 def test_destination_collision_rejected(mirror, workdir):
@@ -51,6 +71,49 @@ def test_unmapped_course_reported(mirror, workdir):
                        mappings={"COMP9999": "Elsewhere"})
     out = _sync(mirror, cfg)
     assert "UNMAPPED" in out
+
+
+def test_withdraw_then_restore(mirror, workdir):
+    cfg = write_config(workdir["vault"] / "moodle-mirror.json")
+    _sync(mirror, cfg)
+    src = workdir["cache"] / "COMP1111 Week 1 [2026]" / "a.pdf"
+    src.unlink()
+    _sync(mirror, cfg)
+    src.write_bytes(b"AAA")
+    out = _sync(mirror, cfg)
+    assert "1 恢复" in out
+
+
+def test_bad_downloader_path_points_to_doctor(mirror, workdir):
+    cfg = write_config(workdir["vault"] / "moodle-mirror.json",
+                       downloader="/nonexistent/dl-xyz")
+    rc, out, err = run_cli(mirror, "--config", str(cfg), "run")
+    assert rc != 0
+    assert "not executable" in err
+    assert "mappings" not in err  # must not misdirect to mappings
+
+
+def test_dot_destination_names_folder(mirror, workdir):
+    cfg = write_config(workdir["vault"] / "moodle-mirror.json",
+                       mappings={"COMP1111": "."})
+    rc, out, err = run_cli(mirror, "--config", str(cfg), "sync")
+    assert rc == 2
+    assert "name a real folder" in err
+
+
+def test_status_json_truncates_events(mirror, workdir):
+    import json
+    (workdir["cache"] / "COMP1111 Week 1 [2026]" / "b.pdf").write_bytes(b"B")
+    cfg = write_config(workdir["vault"] / "moodle-mirror.json")
+    _sync(mirror, cfg)
+    rc, out, err = run_cli(mirror, "--config", str(cfg), "status", "--json",
+                           "--events", "1")
+    assert rc == 0
+    d = json.loads(out)
+    assert len(d["events"]) == 1 and "events_truncated" in d
+    rc, out, err = run_cli(mirror, "--config", str(cfg), "status", "--json",
+                           "--events", "0")
+    assert rc == 0 and "events_truncated" not in json.loads(out)
 
 
 def test_handwritten_index_section_survives(mirror, workdir):

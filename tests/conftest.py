@@ -1,7 +1,6 @@
 """Shared fixtures for offline mirror tests. No network, no real credentials."""
 import importlib.util
 import json
-import os
 import stat
 import sys
 from pathlib import Path
@@ -13,7 +12,6 @@ SCRIPTS = REPO / "scripts"
 
 
 def load(name):
-    import sys
     spec = importlib.util.spec_from_file_location(name, SCRIPTS / f"{name}.py")
     mod = importlib.util.module_from_spec(spec)
     sys.modules[name] = mod  # dataclasses needs the module namespace
@@ -82,7 +80,7 @@ esac
 
 def run_cli(mirror, *argv):
     import io
-    from contextlib import redirect_stdout, redirect_stderr
+    from contextlib import redirect_stderr, redirect_stdout
     out, err = io.StringIO(), io.StringIO()
     with redirect_stdout(out), redirect_stderr(err):
         rc = mirror.main(list(argv))

@@ -1,6 +1,5 @@
 """P1-B: corrupt state is preserved + rebuilt visibly; status never tracebacks."""
 import json
-from pathlib import Path
 
 from conftest import run_cli, write_config
 

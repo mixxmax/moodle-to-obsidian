@@ -4,7 +4,6 @@ import io
 import json
 import os
 from contextlib import redirect_stdout
-from pathlib import Path
 
 from conftest import load, run_cli
 
@@ -29,6 +28,52 @@ def test_three_segment_keeps_privatetoken(tmp_path):
     assert data["moodle_domain"] == "x"
     assert "ABCD12efGH" not in out.getvalue() and "PRIVSECRET" not in out.getvalue()
     assert oct(os.stat(cfg).st_mode & 0o777) == "0o600"
+
+
+def test_verify_matches_upstream_parser(tmp_path, monkeypatch):
+    import sys
+    import types
+    st = load("save_token")
+    fake_service = types.SimpleNamespace(
+        extract_token=lambda url: ("TOKENABCDEF123", "P"))
+    fake_ms = types.ModuleType("moodle_dl.moodle.moodle_service")
+    fake_ms.MoodleService = fake_service
+    for name in ("moodle_dl", "moodle_dl.moodle", "moodle_dl.moodle.moodle_service"):
+        monkeypatch.setitem(sys.modules, name, types.ModuleType(name))
+    monkeypatch.setitem(sys.modules, "moodle_dl.moodle.moodle_service", fake_ms)
+    cfg = tmp_path / "c.json"
+    out = io.StringIO()
+    with redirect_stdout(out):
+        rc = st.main(["--config", str(cfg), "--url",
+                      "moodledl://token=" + _b64("u:::TOKENABCDEF123:::P"),
+                      "--verify"])
+    assert rc == 0
+    assert "matches upstream" in out.getvalue()
+
+
+def test_verify_skipped_without_upstream(tmp_path, monkeypatch):
+    import sys
+    st = load("save_token")
+    monkeypatch.delitem(sys.modules, "moodle_dl", raising=False)
+    monkeypatch.delitem(sys.modules, "moodle_dl.moodle", raising=False)
+    monkeypatch.delitem(sys.modules, "moodle_dl.moodle.moodle_service", raising=False)
+    import builtins
+    real_import = builtins.__import__
+
+    def nope(*a, **k):
+        if a and isinstance(a[0], str) and a[0].startswith("moodle_dl"):
+            raise ImportError("nope")
+        return real_import(*a, **k)
+
+    monkeypatch.setattr(builtins, "__import__", nope)
+    cfg = tmp_path / "c.json"
+    out = io.StringIO()
+    with redirect_stdout(out):
+        rc = st.main(["--config", str(cfg), "--url",
+                      "moodledl://token=" + _b64("u:::TOKENABCDEF123"),
+                      "--verify"])
+    assert rc == 0
+    assert "skipped" in out.getvalue()
 
 
 def test_stdin_import_avoids_argv(tmp_path):

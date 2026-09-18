@@ -1,5 +1,4 @@
 """P1-C: companions refresh on source change, protect user edits, stub upgrades."""
-from pathlib import Path
 
 from conftest import load
 
@@ -18,6 +17,17 @@ def _run(tm, root, *args):
     with redirect_stdout(out):
         tm.main([str(root), *args])
     return out.getvalue()
+
+
+def test_pptx_carries_downgrade_warning(tmp_path):
+    from pptx import Presentation
+    tm = load("to_markdown")
+    p = Presentation()
+    p.slides.add_slide(p.slide_layouts[6])
+    p.save(str(tmp_path / "d.pptx"))
+    _run(tm, tmp_path)
+    md = (tmp_path / "d.md").read_text(encoding="utf-8")
+    assert "Auto-extracted slide text" in md
 
 
 def test_first_gen_then_skip_then_update_on_source_change(tmp_path):
@@ -42,7 +52,7 @@ def test_user_edited_md_conflicts_force_backs_up(tmp_path):
     _docx(tmp_path / "n.docx", "v2")
     o = _run(tm, tmp_path)
     assert "conflicts" in o and "my note" in md.read_text(encoding="utf-8")
-    o2 = _run(tm, tmp_path, "--force")
+    _run(tm, tmp_path, "--force")
     assert (tmp_path / "n.md.localbak").exists()
     assert "my note" not in md.read_text(encoding="utf-8")
 
@@ -78,6 +88,6 @@ def test_frontmatter_quotes_special_names(tmp_path):
     md = tmp_path / 'a"b\\c.md'
     assert md.exists()
     import json
-    line = [l for l in md.read_text(encoding="utf-8").splitlines()
-            if l.startswith("source_file:")][0]
+    line = [ln for ln in md.read_text(encoding="utf-8").splitlines()
+            if ln.startswith("source_file:")][0]
     assert json.loads(line.split(":", 1)[1].strip()) == 'a"b\\c.docx'

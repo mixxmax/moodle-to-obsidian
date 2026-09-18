@@ -17,7 +17,6 @@ import os
 import re
 import shutil
 import subprocess
-import sys
 from urllib.parse import quote
 
 try:
@@ -238,7 +237,8 @@ def build_text(f, ext, body, source_sha, complete):
         "",
     ]
     if ext.lower() in (".pptx", ".ppt"):
-        head += ["> [!warning] Auto-extracted slide text — layout, images and animations may differ. Check the original.", ""]
+        head += ["> [!warning] Auto-extracted slide text — layout, images and "
+                 "animations may differ. Check the original.", ""]
     head += [
         f"> 由 `{f}` 自动转换为 Markdown，便于在 Obsidian 内阅读与全文检索。"
         f" 原件格式（排版、图片、缩进）以原文为准：[{safe}]({enc(f)})",
@@ -282,7 +282,7 @@ def main(argv=None):
     root = os.path.abspath(a.root)
     converted, updated, skipped = 0, 0, 0
     conflicts, failed = [], []
-    user_files, legacy_files = [], []
+    user_files = []
     for dp, dn, fn in os.walk(root):
         dn[:] = [d for d in dn if d not in SKIP_DIRS]
         if any(s in dp for s in SKIP_DIRS):

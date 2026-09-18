@@ -7,7 +7,7 @@
 | `Operation not permitted` on Desktop | macOS privacy | Settings → Full Disk Access for terminal/python, reload launchd, run `doctor` |
 | `UNMAPPED <folder>` | new course code | add row to `mappings` in `moodle-mirror.json`, rerun `sync` |
 | `DUPLICATE <code>` skipped | two source folders, one code | keep one, move other out of source_root, rerun |
-| `*.local-edit.bak` appears | mirror file hand-edited + remote changed | yours kept in `.bak`, mirror updated; merge by hand |
+| conflict backup made | mirror file hand-edited + remote changed | local copy shelved under `state_dir/conflicts/<course>/…`, mirror updated; merge by hand; prune with `doctor --prune-conflicts 30` |
 | withdrawn grows | teacher removed files | intended: local kept, index lists under Retained |
 | links broken in Obsidian | `[]` in label | reconvert: labels strip brackets, targets encoded |
 | token expired | password change / term rollover | repeat login flow, `save_token.py`, `doctor` |

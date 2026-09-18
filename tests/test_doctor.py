@@ -4,7 +4,6 @@ rc reflects sync-readiness only; run-readiness is explicit lines.
 doctor never touches network or the mirror.
 """
 import json
-from pathlib import Path
 
 from conftest import run_cli, write_config
 

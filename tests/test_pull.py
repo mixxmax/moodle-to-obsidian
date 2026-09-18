@@ -5,8 +5,6 @@ no manifest/last-run success stamp, no green success banner.
 rc==0 clean -> mirror proceeds. Unknown downloader version -> mirror
 proceeds but pull is explicitly marked unverified.
 """
-import json
-from pathlib import Path
 
 from conftest import make_mock_dl, run_cli, write_config
 
