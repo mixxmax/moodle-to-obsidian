@@ -104,13 +104,20 @@ def test_withdraw_then_restore(mirror, workdir):
 
 
 def test_bad_downloader_path_points_to_doctor(mirror, workdir):
+    from conftest import write_dl_config
     cfg = write_config(workdir["vault"] / "moodle-mirror.json",
                        downloader="/nonexistent/dl-xyz")
+    # gate first: no dl config at all
+    rc, out, err = run_cli(mirror, "--config", str(cfg), "run")
+    assert rc != 0
+    assert "只能 sync" in out
+    assert "mappings" not in err  # must not misdirect to mappings
+    # gate passes, _pull itself fails on the bad binary
+    write_dl_config(workdir["cache"])
     rc, out, err = run_cli(mirror, "--config", str(cfg), "run")
     assert rc != 0
     assert "cannot execute downloader" in err
     assert "检查 moodle-mirror.json 中的 downloader 路径" in out
-    assert "mappings" not in err  # must not misdirect to mappings
 
 
 def test_corrupt_mirror_config_clean_error(mirror, tmp_path):

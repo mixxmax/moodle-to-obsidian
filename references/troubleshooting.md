@@ -13,7 +13,7 @@
 | token expired | password change / term rollover | repeat login flow, `save_token.py`, `doctor` |
 | `run` against `download_path` override | files land outside `source_root` | mirror scans the effective dir and prints `note: scanning …`; point `source_root` at it if surprising |
 | `manifest.json` corrupt | crash / disk error / manual edit | sync auto-renames it to `manifest.json.corrupt-<ts>`, rebuilds, and counts mirrored files as adopted (visible in balance + changelog); originals never touched |
-| `run`: no downloader / pull failed | `downloader` empty or moodle-dl unconfigured | set `downloader` to `command -v moodle-dl`; run `moodle-dl --init` in `moodle-sync/`; or use `sync` |
+| `run`: no downloader / pull failed | `downloader` empty or moodle-dl unconfigured | set `downloader` to `command -v moodle-dl`; run `moodle-dl --init` in `<SOURCE_ROOT>`; or use `sync` |
 | `destinations ... collide` | two codes → same folder | one folder per course in `mappings` |
-| `must not overlap source_root` | mapping inside `moodle-sync/` | destinations must be vault folders outside the download dir |
+| `must not overlap source_root` | mapping inside the download tree | destinations must be vault folders outside the download dir |
 | pptx md carries warning callout | intended (text-only extraction) | open original for layout/images |

@@ -58,6 +58,53 @@ def test_codeless_null_mapping_ignored(mirror, workdir):
     assert status["status"] == "success"
 
 
+def test_default_template_state_dir_not_a_course(mirror, tmp_path):
+    import json
+    import shutil
+
+    from conftest import REPO
+
+    shutil.copy(REPO / "config.template.json", tmp_path / "m.json")
+    vault = tmp_path / "vault"
+    (vault / "moodle-sync" / "COMP1111 A [2026]").mkdir(parents=True)
+    (vault / "moodle-sync" / "COMP1111 A [2026]" / "a.pdf").write_bytes(b"A")
+    cfg = tmp_path / "m.json"
+    c = json.loads(cfg.read_text(encoding="utf-8"))
+    c["source_root"] = str(vault / "moodle-sync")
+    c["vault_root"] = str(vault)
+    c["state_dir"] = str(vault / "moodle-sync" / ".moodle-local-sync")
+    c["changelog"] = str(vault / "Log.md")
+    c["downloader"] = ""
+    c["mappings"] = {"COMP1111": "C1"}
+    cfg.write_text(json.dumps(c), encoding="utf-8")
+    for _ in range(2):
+        rc, out, err = run_cli(mirror, "--config", str(cfg), "sync")
+        assert rc == 0, err
+        assert "UNRECOGNIZED" not in out
+    assert "成功" in out
+
+
+def test_overlap_via_download_path_rejected(mirror, workdir):
+    import json
+    (workdir["cache"] / "config.json").write_text(
+        json.dumps({"download_path": "../vault/Target"}), encoding="utf-8")
+    cfg = write_config(workdir["vault"] / "moodle-mirror.json",
+                       mappings={"C1": "Target"})
+    rc, out, err = run_cli(mirror, "--config", str(cfg), "sync")
+    assert rc == 2
+    assert "overlap" in err
+
+
+def test_doctor_flags_missing_scan_root(mirror, workdir):
+    import json
+    (workdir["cache"] / "config.json").write_text(
+        json.dumps({"download_path": "not-created"}), encoding="utf-8")
+    cfg = write_config(workdir["vault"] / "moodle-mirror.json")
+    rc, out, err = run_cli(mirror, "--config", str(cfg), "doctor")
+    assert "NOT ready" in out or "NOT READY" in out
+    assert "scan root" in out
+
+
 def test_download_path_override_scanned(mirror, workdir):
     import json
     sub = workdir["cache"] / "downloads"

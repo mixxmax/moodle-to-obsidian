@@ -163,6 +163,7 @@ def load_config(path) -> Config:
     base = cp.parent
     src = _rp(base, raw.get("source_root", ""), "source_root")
     vault = _rp(base, raw.get("vault_root", ""), "vault_root")
+    scan_root = _scan_root_for(src)
     state = _rp(base, raw.get("state_dir", str(src / ".moodle-local-sync")), "state_dir")
     log = _rp(base, raw.get("changelog", str(vault / "Moodle Sync Updates.md")), "changelog")
     mp = raw.get("mappings")
@@ -189,11 +190,13 @@ def load_config(path) -> Config:
                 f"(two courses must not share one folder)"
             )
         seen[key] = str(k)
-        if _overlaps(dest_dir, src):
+        if _overlaps(dest_dir, src) or _overlaps(dest_dir, scan_root):
             raise ConfigError(f"destination for {k} must not overlap source_root")
         if not _within(vault, dest_dir):
             raise ConfigError(f"destination for {k} must stay inside vault_root")
         clean_mp[str(k)] = dest_rel
+    if not clean_mp and not ignored:
+        raise ConfigError("mappings must contain at least one destination or one null ignore")
     mirror_folder = _rel_name(raw.get("mirror_folder", "99 Moodle Mirror"), "mirror_folder")
     index_filename = _rel_name(
         raw.get("index_filename", "Moodle Mirror Index.md"), "index_filename", single=True
@@ -202,7 +205,7 @@ def load_config(path) -> Config:
         mroot = (vault / dest_rel / mirror_folder).resolve()
         if not _within(vault / dest_rel, mroot):
             raise ConfigError(f"mirror_folder escapes course destination for {code}")
-        if _overlaps(mroot, src):
+        if _overlaps(mroot, src) or _overlaps(mroot, scan_root):
             raise ConfigError(f"mirror root for {code} must not overlap source_root")
     try:
         retries = int(raw.get("pull_retries", 3))
@@ -401,6 +404,24 @@ def _resolve_under(base: Path, value) -> Path | None:
     return p if p.is_absolute() else (base / p)
 
 
+def _scan_root_for(source_root: Path) -> Path:
+    """Effective download dir: dl config download_path or source_root itself.
+
+    Mirrors upstream (cwd-relative since we invoke the downloader with
+    cwd=source_root and no --path flag)."""
+    try:
+        raw = json.loads((source_root / "config.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return source_root
+    if not isinstance(raw, dict):
+        return source_root
+    dp = raw.get("download_path")
+    if not dp or not isinstance(dp, str) or not dp.strip():
+        return source_root
+    p = Path(dp.strip())
+    return (p if p.is_absolute() else (source_root / p)).resolve()
+
+
 def _effective_dl_dirs(cfg: Config):
     """(scan_root, lock_file, notes) honoring dl config overrides.
 
@@ -409,17 +430,46 @@ def _effective_dl_dirs(cfg: Config):
     same way here. If you override download_path, keep it inside source_root
     or point source_root at it; the manifest is relative to the scan root."""
     raw = _read_dl_raw(cfg)
+    scan = _scan_root_for(cfg.source_root)
     notes = []
-    scan = _resolve_under(cfg.source_root, raw.get("download_path"))
-    if scan is None:
-        scan = cfg.source_root
-    else:
+    if scan != cfg.source_root.resolve():
         notes.append(f"scanning {scan} (dl config download_path override)")
     misc = _resolve_under(cfg.source_root, raw.get("misc_files_path"))
     lock_base = misc if misc is not None else cfg.source_root
     if misc is not None:
         notes.append(f"lock dir {lock_base} (dl config misc_files_path override)")
     return scan.resolve(), (lock_base.resolve() / "running.lock"), notes
+
+
+def _internal_dirs(cfg: Config, scan_root: Path) -> list[Path]:
+    """Dirs inside the scan root that are ours, never courses.
+
+    Default template keeps state_dir inside source_root; a misc_files_path
+    override may add another. Without this, the state dir itself would be
+    reported UNRECOGNIZED and poison every default-layout run."""
+    out = []
+    cand = cfg.state_dir.resolve()
+    try:
+        cand.relative_to(scan_root)
+        out.append(cand)
+    except ValueError:
+        pass
+    raw = _read_dl_raw(cfg)
+    misc = _resolve_under(cfg.source_root, raw.get("misc_files_path"))
+    if misc is not None:
+        misc = misc.resolve()
+        if misc != scan_root:
+            try:
+                misc.relative_to(scan_root)
+                out.append(misc)
+            except ValueError:
+                pass
+    return out
+
+
+def _is_internal(path: Path, internal: list[Path]) -> bool:
+    rp = path.resolve()
+    return any(rp == ex or ex in rp.parents for ex in internal)
 
 
 def _check_indexes(cfg: Config, planned: dict) -> None:
@@ -465,12 +515,14 @@ def synchronize(cfg: Config, pull_verdict: str = "n/a") -> SyncResult:
             print(f"⚠️ {reset_note}", file=sys.stderr)
         by_code: dict[str, list[Path]] = {}
         dirnames: dict[str, str] = {}
+        internal = _internal_dirs(cfg, scan_root)
         for it in sorted(scan_root.iterdir(), key=lambda x: x.name.casefold()):
-            if it.is_dir():
-                c = _code(it.name)
-                ident = c if c else f"name:{it.name}"
-                by_code.setdefault(ident, []).append(it)
-                dirnames[ident] = it.name
+            if not it.is_dir() or _is_internal(it, internal):
+                continue
+            c = _code(it.name)
+            ident = c if c else f"name:{it.name}"
+            by_code.setdefault(ident, []).append(it)
+            dirnames[ident] = it.name
         planned: dict[str, str] = {}
         for ident, paths in by_code.items():
             if len(paths) != 1:
@@ -498,8 +550,8 @@ def synchronize(cfg: Config, pull_verdict: str = "n/a") -> SyncResult:
                 else:
                     res.unmapped_courses.append(name)
                 continue
-            res.scanned_courses.append(code)
             label = code if not code.startswith("name:") else name
+            res.scanned_courses.append(label)
             course_root = (cfg.vault_root / dest_name).resolve()
             if not _within(cfg.vault_root, course_root):
                 raise ConfigError(f"course destination escapes vault: {dest_name}")
@@ -521,7 +573,7 @@ def synchronize(cfg: Config, pull_verdict: str = "n/a") -> SyncResult:
                     rel = link.relative_to(src_course).as_posix()
                     res.skipped_symlinks += 1
                     res.events.append({
-                        "type": "skipped-symlink", "course": code, "path": rel,
+                        "type": "skipped-symlink", "course": label, "path": rel,
                     })
             srcs = sorted((x for x in src_course.rglob("*") if x.is_file() and not x.is_symlink()
                            and x.name not in CONTROL_FILES),
@@ -604,6 +656,8 @@ def synchronize(cfg: Config, pull_verdict: str = "n/a") -> SyncResult:
                 res.missing_courses.append(code)
                 res.incomplete = True
         res.finished_at = _now()
+        if res.unmapped_courses or res.duplicate_courses or res.unrecognized_courses:
+            res.incomplete = True
         summary = res.as_dict()
         # last_successful_sync means "last fully-verified incremental sync".
         # Incomplete / recovered / unverified runs write manifest + last-run
@@ -810,12 +864,12 @@ def _dl_config_status(cfg: Config) -> tuple[bool, list[str]]:
     # empty whitelist is only sane together with a blacklist.
     wl = raw.get("download_course_ids", [])
     bl = raw.get("dont_download_course_ids", [])
-    if wl:
-        if (not isinstance(wl, list)
-                or any(not isinstance(i, int) or isinstance(i, bool) for i in wl)):
-            reasons.append(f"download_course_ids must be an int list in {p} "
+    for key, ids in (("download_course_ids", wl), ("dont_download_course_ids", bl)):
+        if ids and (not isinstance(ids, list)
+                     or any(not isinstance(i, int) or isinstance(i, bool) for i in ids)):
+            reasons.append(f"{key} must be an int list in {p} "
                            "(upstream compares ints; strings silently match nothing)")
-    elif not bl:
+    if not wl and not bl:
         reasons.append(f"download_course_ids empty and no dont_download_course_ids in {p} "
                        "(upstream then downloads ALL courses; fill one list)")
     if raw.get("download_also_with_cookie") and not raw.get("privatetoken"):
@@ -855,9 +909,12 @@ def _doctor(cfg: Config, prune_days: int | None = None) -> int:
         removed, kept = _prune_conflicts(cfg.state_dir, prune_days)
         print(f"pruned {removed} conflict backup(s) older than {prune_days}d, kept {kept}")
     ok = True
+    scan_root = _scan_root_for(cfg.source_root)
     for good, msg in [(cfg.source_root.is_dir(), f"source_root: {cfg.source_root}"),
+                      (scan_root.is_dir(), f"scan root: {scan_root}"),
                       (cfg.vault_root.is_dir(), f"vault_root: {cfg.vault_root}"),
-                      (bool(cfg.mappings), f"mappings: {len(cfg.mappings)}")]:
+                      (bool(cfg.mappings or cfg.ignored),
+                       f"mappings: {len(cfg.mappings)} destinations, {len(cfg.ignored)} ignored")]:
         print(f"{'OK' if good else 'ISSUE'}  {msg}")
         ok &= good
     scan_root, lock_file, dl_notes = _effective_dl_dirs(cfg)
@@ -1061,6 +1118,13 @@ def main(argv=None) -> int:
         pull_note = None
         verdict = "n/a"
         if a.cmd == "run":
+            dl_ok, dl_reasons = _dl_config_status(cfg)
+            if not dl_ok:
+                for r_ in dl_reasons:
+                    print(f"   · {r_}", file=sys.stderr)
+                print("dl config not ready; mirror unchanged", file=sys.stderr)
+                _print_guide(cfg, mode="run", failed="run_not_ready")
+                return 2
             rc, verdict, note = _pull(cfg)
             log.info("pull verdict=%s note=%s", verdict, note)
             if verdict == "failed":

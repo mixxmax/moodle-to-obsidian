@@ -1,6 +1,7 @@
 """Shared fixtures for offline mirror tests. No network, no real credentials."""
 import importlib.util
 import json
+import os
 import stat
 import sys
 from pathlib import Path
@@ -76,6 +77,16 @@ esac
     p.write_text(script, encoding="utf-8")
     p.chmod(p.stat().st_mode | stat.S_IXUSR)
     return str(p)
+
+
+def write_dl_config(cache, **overrides):
+    data = {"moodle_domain": "moodle.example.test", "moodle_path": "/",
+            "download_course_ids": [111], "token": "FAKETOKEN123"}
+    data.update(overrides)
+    p = Path(cache) / "config.json"
+    p.write_text(json.dumps(data), encoding="utf-8")
+    os.chmod(p, 0o600)
+    return p
 
 
 def run_cli(mirror, *argv):
