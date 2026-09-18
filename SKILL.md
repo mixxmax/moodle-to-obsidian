@@ -136,7 +136,8 @@ Next-step picker (use the first that matches):
 | conflicted > 0 | 在更新记录里找 `state:conflicts/` 对应备份，对比本地修改 |
 | 本轮有新增/更新 | 在 Obsidian 打开 `99 Moodle Mirror`；需要可搜再说「生成伴生 md」 |
 | 本轮无变化 | 有新课件再 `run`；只重映缓存则 `sync` |
-| doctor 全 OK | 可 `run`（①+②）或 `sync`（只②） |
+| doctor：sync ready + run READY | 可 `run`（①+②）或 `sync`（只②） |
+| doctor：sync ready，但 run NOT READY | 先按 NOT READY 原因修 run 前提；当前只能 `sync` |
 | doctor 失败 | 按 ISSUE 改配置后再 doctor |
 
 Also include when relevant: companion md counts; (only if asked) MCP summary.  
