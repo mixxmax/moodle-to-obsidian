@@ -11,7 +11,7 @@ from conftest import run_cli, write_config
 def _dl_config(cache, **kw):
     p = cache / "config.json"
     data = {"moodle_domain": "moodle.example.test", "moodle_path": "/",
-            "download_course_ids": ["111"], "token": "FAKETOKEN123"}
+            "download_course_ids": [111], "token": "FAKETOKEN123"}
     data.update(kw)
     p.write_text(json.dumps(data), encoding="utf-8")
     return p
@@ -60,7 +60,7 @@ def test_doctor_flags_missing_moodle_path(mirror, workdir, tmp_path):
     dl = tmp_path / "dl.sh"
     dl.write_text("#!/bin/sh\nexit 0\n")
     dl.chmod(dl.stat().st_mode | stat.S_IXUSR)
-    base = {"moodle_domain": "x", "download_course_ids": ["1"], "token": "T"}
+    base = {"moodle_domain": "x", "download_course_ids": [1], "token": "T"}
     (workdir["cache"] / "config.json").write_text(json.dumps(base), encoding="utf-8")
     (workdir["cache"] / "config.json").chmod(0o600)
     from conftest import write_config
@@ -72,6 +72,33 @@ def test_doctor_flags_missing_moodle_path(mirror, workdir, tmp_path):
     (workdir["cache"] / "config.json").chmod(0o600)
     rc, out, err = run_cli(mirror, "--config", str(cfg), "doctor")
     assert "run READY" in out and "NOT READY" not in out
+
+
+def test_doctor_course_id_modes(mirror, workdir, tmp_path):
+    import stat
+    dl = tmp_path / "dl.sh"
+    dl.write_text("#!/bin/sh\nexit 0\n")
+    dl.chmod(dl.stat().st_mode | stat.S_IXUSR)
+    from conftest import write_config
+    cfg = write_config(workdir["vault"] / "moodle-mirror.json", downloader=str(dl))
+
+    def _check(ids, dont, want_ready, want_text):
+        (workdir["cache"] / "config.json").write_text(json.dumps(
+            {"moodle_domain": "x", "moodle_path": "/", "token": "T",
+             "download_course_ids": ids, "dont_download_course_ids": dont}),
+            encoding="utf-8")
+        (workdir["cache"] / "config.json").chmod(0o600)
+        rc, out, err = run_cli(mirror, "--config", str(cfg), "doctor")
+        assert rc == 0
+        if want_ready:
+            assert "run READY" in out and "NOT READY" not in out, out
+        else:
+            assert "NOT READY" in out and want_text in out, out
+
+    _check([111], [], True, "")
+    _check([], [999], True, "")  # blacklist mode: empty whitelist is legitimate
+    _check(["111"], [], False, "int list")
+    _check([], [], False, "ALL courses")
 
 
 def test_doctor_complete_reports_run_ready(mirror, workdir, tmp_path):

@@ -5,12 +5,13 @@
 | `running.lock` / "already running" | killed moodle-dl left lock | `pgrep -fl moodle-dl`; delete lock only if none running |
 | `invalidlogin` on token.php | HKU CAS-only | use mobile launch flow (`references/moodle-login.md`) |
 | `Operation not permitted` on Desktop | macOS privacy | Settings → Full Disk Access for terminal/python, reload launchd, run `doctor` |
-| `UNMAPPED <folder>` | new course code | add row to `mappings` in `moodle-mirror.json`, rerun `sync` |
+| `UNMAPPED <folder>` / `UNRECOGNIZED <folder>` | new course code / codeless dirname | map the code or literal dirname (or `null` to ignore) in `moodle-mirror.json`, rerun `sync`; runs stay `incomplete` until then |
 | `DUPLICATE <code>` skipped | two source folders, one code | keep one, move other out of source_root, rerun |
 | conflict backup made | mirror file hand-edited + remote changed | local copy shelved under `state_dir/conflicts/<course>/…`, mirror updated; merge by hand; prune with `doctor --prune-conflicts 30` |
 | withdrawn grows | teacher removed files | intended: local kept, index lists under Retained |
 | links broken in Obsidian | `[]` in label | reconvert: labels strip brackets, targets encoded |
 | token expired | password change / term rollover | repeat login flow, `save_token.py`, `doctor` |
+| `run` against `download_path` override | files land outside `source_root` | mirror scans the effective dir and prints `note: scanning …`; point `source_root` at it if surprising |
 | `manifest.json` corrupt | crash / disk error / manual edit | sync auto-renames it to `manifest.json.corrupt-<ts>`, rebuilds, and counts mirrored files as adopted (visible in balance + changelog); originals never touched |
 | `run`: no downloader / pull failed | `downloader` empty or moodle-dl unconfigured | set `downloader` to `command -v moodle-dl`; run `moodle-dl --init` in `moodle-sync/`; or use `sync` |
 | `destinations ... collide` | two codes → same folder | one folder per course in `mappings` |

@@ -78,6 +78,7 @@ class Config:
     state_dir: Path
     changelog: Path
     mappings: dict
+    ignored: tuple = ()
     mirror_folder: str = "99 Moodle Mirror"
     index_filename: str = "Moodle Mirror Index.md"
     downloader: Path | None = None
@@ -100,6 +101,8 @@ class SyncResult:
     unmapped_courses: list = field(default_factory=list)
     duplicate_courses: list = field(default_factory=list)
     missing_courses: list = field(default_factory=list)
+    unrecognized_courses: list = field(default_factory=list)
+    ignored_courses: list = field(default_factory=list)
     skipped_symlinks: int = 0
     recovered: bool = False
     incomplete: bool = False
@@ -108,7 +111,8 @@ class SyncResult:
 
     def as_dict(self):
         d = asdict(self)
-        if self.incomplete:
+        if (self.incomplete or self.unmapped_courses or self.duplicate_courses
+                or self.unrecognized_courses):
             d["status"] = "incomplete"
         elif self.recovered:
             d["status"] = "recovered"
@@ -166,9 +170,15 @@ def load_config(path) -> Config:
         raise ConfigError("mappings must be non-empty object")
     seen: dict[str, str] = {}
     clean_mp: dict[str, str] = {}
+    ignored: list[str] = []
     for k, v in mp.items():
+        if not isinstance(k, str) or not k.strip():
+            raise ConfigError(f"bad mapping key: {k!r}")
+        if v is None:
+            ignored.append(str(k))  # explicitly ignored: skipped silently-ish
+            continue
         if not isinstance(v, str) or not v.strip():
-            raise ConfigError(f"bad destination for {k}: must be vault-relative")
+            raise ConfigError(f"bad destination for {k}: must be vault-relative or null")
         dest_rel = _rel_name(v, f"destination for {k}")
         dest_dir = (vault / dest_rel).resolve()
         # Resolved path so "./Example" and "Example" (and symlinks) collide
@@ -202,7 +212,7 @@ def load_config(path) -> Config:
     if retries < 1 or retry_secs < 0:
         raise ConfigError("pull_retries must be >= 1 and pull_retry_seconds >= 0")
     dl = _rp(base, raw["downloader"], "downloader") if raw.get("downloader") else None
-    return Config(src, vault, state, log, clean_mp, mirror_folder, index_filename,
+    return Config(src, vault, state, log, clean_mp, tuple(ignored), mirror_folder, index_filename,
                   dl, retries, retry_secs)
 def _code(name: str):
     m = CODE_RE.search(name)
@@ -362,15 +372,62 @@ def _manifest(p: Path):
             "be adopted, never deleted.")
     return m, None
 
-def _check_indexes(cfg: Config, codes) -> None:
+def _resolve_identity(cfg: Config, code: str | None, dirname: str):
+    """Map a source folder to (identity, destination, ignored).
+
+    identity is the course code, or 'name:<dirname>' when moodle-dl named the
+    folder from course.fullname without a code. mappings accepts both keys;
+    a null value means explicitly ignored."""
+    ident = code if code else f"name:{dirname}"
+    if (code and code in cfg.ignored) or dirname in cfg.ignored:
+        return ident, None, True
+    dest = (cfg.mappings.get(code) if code else None) or cfg.mappings.get(dirname)
+    return ident, dest, False
+
+
+def _read_dl_raw(cfg: Config) -> dict:
+    """moodle-dl's own config, best-effort (missing/corrupt -> {})."""
+    try:
+        raw = json.loads((cfg.source_root / "config.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return raw if isinstance(raw, dict) else {}
+
+
+def _resolve_under(base: Path, value) -> Path | None:
+    if not value or not isinstance(value, str) or not value.strip():
+        return None
+    p = Path(value.strip())
+    return p if p.is_absolute() else (base / p)
+
+
+def _effective_dl_dirs(cfg: Config):
+    """(scan_root, lock_file, notes) honoring dl config overrides.
+
+    Upstream resolves download_path/misc_files_path against its cwd, which is
+    source_root in our `_pull` invocation — so relative values resolve the
+    same way here. If you override download_path, keep it inside source_root
+    or point source_root at it; the manifest is relative to the scan root."""
+    raw = _read_dl_raw(cfg)
+    notes = []
+    scan = _resolve_under(cfg.source_root, raw.get("download_path"))
+    if scan is None:
+        scan = cfg.source_root
+    else:
+        notes.append(f"scanning {scan} (dl config download_path override)")
+    misc = _resolve_under(cfg.source_root, raw.get("misc_files_path"))
+    lock_base = misc if misc is not None else cfg.source_root
+    if misc is not None:
+        notes.append(f"lock dir {lock_base} (dl config misc_files_path override)")
+    return scan.resolve(), (lock_base.resolve() / "running.lock"), notes
+
+
+def _check_indexes(cfg: Config, planned: dict) -> None:
     """Pre-flight: validate AUTO markers of every index about to be rewritten.
 
     Runs BEFORE any file is copied so a broken index aborts the run with
     mirror, manifest and changelog all untouched."""
-    for code in codes:
-        dest = cfg.mappings.get(code)
-        if dest is None:
-            continue
+    for dest in planned.values():
         idx = cfg.vault_root / dest / cfg.mirror_folder / cfg.index_filename
         if not idx.exists():
             continue
@@ -392,9 +449,14 @@ def synchronize(cfg: Config, pull_verdict: str = "n/a") -> SyncResult:
         raise MirrorEnvError(f"source_root missing: {cfg.source_root}")
     if not cfg.vault_root.is_dir():
         raise MirrorEnvError(f"vault_root missing: {cfg.vault_root}")
-    if (cfg.source_root / "running.lock").exists():
+    scan_root, lock_file, dl_notes = _effective_dl_dirs(cfg)
+    if not scan_root.is_dir():
+        raise MirrorEnvError(f"effective scan dir missing: {scan_root}")
+    if lock_file.exists():
         raise SyncBusyError("download still running; mirror not started")
     with _lock(cfg.state_dir):
+        for n in dl_notes:
+            print(f"note: {n}")
         mp, reset_note = _manifest(cfg.state_dir / "manifest.json")
         courses = mp["courses"]
         res = SyncResult(started_at=_now(), pull_verdict=pull_verdict)
@@ -402,23 +464,42 @@ def synchronize(cfg: Config, pull_verdict: str = "n/a") -> SyncResult:
             res.recovered = True
             print(f"⚠️ {reset_note}", file=sys.stderr)
         by_code: dict[str, list[Path]] = {}
-        for it in sorted(cfg.source_root.iterdir(), key=lambda x: x.name.casefold()):
+        dirnames: dict[str, str] = {}
+        for it in sorted(scan_root.iterdir(), key=lambda x: x.name.casefold()):
             if it.is_dir():
                 c = _code(it.name)
-                if c:
-                    by_code.setdefault(c, []).append(it)
-        _check_indexes(cfg, [c for c in by_code
-                             if len(by_code[c]) == 1 and c in cfg.mappings])
+                ident = c if c else f"name:{it.name}"
+                by_code.setdefault(ident, []).append(it)
+                dirnames[ident] = it.name
+        planned: dict[str, str] = {}
+        for ident, paths in by_code.items():
+            if len(paths) != 1:
+                continue
+            name = dirnames[ident]
+            code = None if ident.startswith("name:") else ident
+            _, dest, ignored_flag = _resolve_identity(cfg, code, name)
+            if dest is not None and not ignored_flag:
+                planned[ident] = dest
+        _check_indexes(cfg, planned)
         for code in sorted(by_code):
             if len(by_code[code]) > 1:
-                res.duplicate_courses.append(code)
+                res.duplicate_courses.append(dirnames[code])
                 continue
             src_course = by_code[code][0]
-            dest_name = cfg.mappings.get(code)
+            name = dirnames[code]
+            ident, dest_name, ignored_flag = _resolve_identity(
+                cfg, None if code.startswith("name:") else code, name)
+            if ignored_flag:
+                res.ignored_courses.append(name)
+                continue
             if dest_name is None:
-                res.unmapped_courses.append(src_course.name)
+                if code.startswith("name:"):
+                    res.unrecognized_courses.append(name)
+                else:
+                    res.unmapped_courses.append(name)
                 continue
             res.scanned_courses.append(code)
+            label = code if not code.startswith("name:") else name
             course_root = (cfg.vault_root / dest_name).resolve()
             if not _within(cfg.vault_root, course_root):
                 raise ConfigError(f"course destination escapes vault: {dest_name}")
@@ -482,7 +563,7 @@ def synchronize(cfg: Config, pull_verdict: str = "n/a") -> SyncResult:
                 elif not _same(s, d):
                     edited = old and old.get("mtime_ns") is not None and d.stat().st_mtime_ns != old["mtime_ns"]
                     if edited or old is None:
-                        backup_rel = _conflict_backup(cfg.state_dir, code, rel, d)
+                        backup_rel = _conflict_backup(cfg.state_dir, label, rel, d)
                         _acopy(s, d)
                         ev = "conflicted"
                     else:
@@ -492,7 +573,7 @@ def synchronize(cfg: Config, pull_verdict: str = "n/a") -> SyncResult:
                               else "updated")
                 elif old is None:
                     res.adopted += 1
-                    res.events.append({"type": "adopted", "course": code, "path": rel})
+                    res.events.append({"type": "adopted", "course": label, "path": rel})
                 elif old.get("status") == "withdrawn":
                     ev = "restored"
                 else:
@@ -501,7 +582,7 @@ def synchronize(cfg: Config, pull_verdict: str = "n/a") -> SyncResult:
                             "first_seen": old.get("first_seen") if old else res.started_at, "last_seen": res.started_at}
                 if ev:
                     setattr(res, ev, getattr(res, ev) + 1)
-                    evt = {"type": ev, "course": code, "path": rel}
+                    evt = {"type": ev, "course": label, "path": rel}
                     if backup_rel:
                         evt["backup"] = backup_rel
                     res.events.append(evt)
@@ -512,12 +593,12 @@ def synchronize(cfg: Config, pull_verdict: str = "n/a") -> SyncResult:
                 if old.get("status") != "withdrawn":
                     r["withdrawn_at"] = res.started_at
                     res.withdrawn += 1
-                    res.events.append({"type": "withdrawn", "course": code, "path": rel})
+                    res.events.append({"type": "withdrawn", "course": label, "path": rel})
                 r["status"] = "withdrawn"
                 nxt[rel] = r
             courses[code] = {"source_name": src_course.name, "destination": dest_name,
                              "last_scanned": res.started_at, "files": nxt}
-            _write_index(mroot / cfg.index_filename, code, src_course.name, res.started_at, nxt)
+            _write_index(mroot / cfg.index_filename, label, src_course.name, res.started_at, nxt)
         for code in sorted(courses):
             if code not in by_code:
                 res.missing_courses.append(code)
@@ -550,6 +631,11 @@ def synchronize(cfg: Config, pull_verdict: str = "n/a") -> SyncResult:
             lines.append(f"- UNMAPPED {u}")
         for d_ in res.duplicate_courses:
             lines.append(f"- DUPLICATE {d_} (skipped)")
+        for g in res.unrecognized_courses:
+            lines.append(f"- UNRECOGNIZED {g} (no course code in folder name and no "
+                         "literal mapping; map the folder name or set it to null to ignore)")
+        for g in res.ignored_courses:
+            lines.append(f"- IGNORED {g}")
         for m in res.missing_courses:
             lines.append(f"- MISSING-COURSE `{m}` (source folder vanished; "
                          "local mirror retained, NOT withdrawn)")
@@ -568,6 +654,9 @@ def _next_hint(cfg: Config, result: dict | None = None, *, failed: str | None = 
         return "先修好 moodle-dl（token / download_course_ids / 网络），再跑 run；或改用 sync 只映射已有缓存"
     if failed == "no_downloader":
         return "要拉取：在 moodle-mirror.json 填 downloader，并完成 moodle-sync/config.json；只要映射：改跑 sync"
+    if failed == "run_not_ready":
+        return ("按上方 NOT READY 原因修好 moodle-dl 配置（--init / token / course_ids / "
+                "downloader 路径），当前只能 sync；不要跑 run")
     if failed == "downloader_not_found":
         return "检查 moodle-mirror.json 中的 downloader 路径是否存在可执行，然后重新运行 doctor"
     if failed == "config":
@@ -579,13 +668,15 @@ def _next_hint(cfg: Config, result: dict | None = None, *, failed: str | None = 
     if failed == "busy":
         return "等待当前下载结束；确认无 moodle-dl 进程后再删 running.lock"
     if result:
+        if result.get("unrecognized_courses"):
+            return ("有课程目录无法识别（无课程代码）：把字面目录名写入 mappings "
+                    "（或置 null 忽略），再跑 sync")
+        if result.get("unmapped_courses") or result.get("duplicate_courses"):
+            return ("有未映射/重复课程：写入 mappings（字面目录名亦可）或置 null 忽略，"
+                    "再跑 sync；此前轮次不计成功")
         if result.get("missing_courses"):
             return ("源课程目录消失（下载不完整或已撤课）：先检查 moodle-sync 下该课文件夹，"
                     "确认后重跑 run 补拉；本地镜像已保留，未标撤回")
-        if result.get("unmapped_courses"):
-            return "把 UNMAPPED 课号写进 mappings，再跑 sync（只需②映射）"
-        if result.get("duplicate_courses"):
-            return "下载树里同课号多文件夹，先理清 moodle-sync 后再 sync"
         if result.get("conflicted", 0):
             return ("打开更新记录找 state:conflicts/ 下的对应备份，对比本地修改；"
                     "确认后可继续用 Obsidian 看 99 Moodle Mirror")
@@ -600,7 +691,11 @@ def _print_guide(cfg: Config, *, mode: str, result: dict | None = None, failed: 
                  pull_note: str | None = None) -> None:
     """Human-facing where/what-next block (same shape for CLI and agents)."""
     run_state = (result or {}).get("status", "success")
-    if mode == "run":
+    if failed == "run_not_ready":
+        print("")
+        print("⚠️ 本轮：自检 doctor — sync 就绪，run 未就绪")
+        stage = "自检 doctor"
+    elif mode == "run":
         if failed:
             stage = "①拉取（失败，镜像未改）"
         elif pull_note or run_state == "unverified":
@@ -622,7 +717,9 @@ def _print_guide(cfg: Config, *, mode: str, result: dict | None = None, failed: 
         stage = "自检 doctor"
     else:
         stage = mode
-    if failed:
+    if failed == "run_not_ready":
+        status, icon = "sync 就绪 / run 未就绪", "⚠️"
+    elif failed:
         status, icon = "失败", "❌"
     elif pull_note or run_state == "unverified":
         status, icon = "映射成功（拉取未验证）", "⚠️"
@@ -657,6 +754,10 @@ def _print_guide(cfg: Config, *, mode: str, result: dict | None = None, failed: 
             print(f"   · UNMAPPED {u}")
         for d in result.get("duplicate_courses") or []:
             print(f"   · DUPLICATE {d}")
+        for g in result.get("unrecognized_courses") or []:
+            print(f"   · UNRECOGNIZED {g} (map the folder name or set it to null)")
+        for g in result.get("ignored_courses") or []:
+            print(f"   · IGNORED {g}")
         if result.get("skipped_symlinks", 0):
             print(f"   · SKIPPED-SYMLINK x{result['skipped_symlinks']} "
                   "(symlink 未跟随，详情见更新记录)")
@@ -699,9 +800,24 @@ def _dl_config_status(cfg: Config) -> tuple[bool, list[str]]:
     if not isinstance(raw, dict):
         return False, [f"config root must be an object: {p}"]
     reasons = []
-    for key in ("moodle_domain", "moodle_path", "download_course_ids", "token"):
-        if not raw.get(key):
-            reasons.append(f"empty {key} in {p}")
+    if not raw.get("moodle_domain"):
+        reasons.append(f"empty moodle_domain in {p}")
+    if not raw.get("moodle_path"):
+        reasons.append(f"empty moodle_path in {p} (upstream get_moodle_path() requires it)")
+    if not raw.get("token"):
+        reasons.append(f"empty token in {p} (run save_token.py or 'moodle-dl --new-token --sso')")
+    # Upstream compares course_id ints; empty whitelist = download ALL, so an
+    # empty whitelist is only sane together with a blacklist.
+    wl = raw.get("download_course_ids", [])
+    bl = raw.get("dont_download_course_ids", [])
+    if wl:
+        if (not isinstance(wl, list)
+                or any(not isinstance(i, int) or isinstance(i, bool) for i in wl)):
+            reasons.append(f"download_course_ids must be an int list in {p} "
+                           "(upstream compares ints; strings silently match nothing)")
+    elif not bl:
+        reasons.append(f"download_course_ids empty and no dont_download_course_ids in {p} "
+                       "(upstream then downloads ALL courses; fill one list)")
     if raw.get("download_also_with_cookie") and not raw.get("privatetoken"):
         reasons.append(f"download_also_with_cookie is on but privatetoken missing in {p} "
                        "(cookie downloads will silently fail; run 'moodle-dl --new-token --sso')")
@@ -744,8 +860,11 @@ def _doctor(cfg: Config, prune_days: int | None = None) -> int:
                       (bool(cfg.mappings), f"mappings: {len(cfg.mappings)}")]:
         print(f"{'OK' if good else 'ISSUE'}  {msg}")
         ok &= good
-    busy = (cfg.source_root / "running.lock").exists()
-    print(f"{'BUSY' if busy else 'OK'}  download lock")
+    scan_root, lock_file, dl_notes = _effective_dl_dirs(cfg)
+    for n in dl_notes:
+        print(f"note: {n}")
+    busy = lock_file.exists()
+    print(f"{'BUSY' if busy else 'OK'}  download lock ({lock_file.parent})")
     if busy:
         ok = False
     print(f"{'OK' if ok else 'ISSUE'}  sync ready" if ok else "ISSUE  sync NOT ready")
@@ -792,6 +911,8 @@ def _doctor(cfg: Config, prune_days: int | None = None) -> int:
         _print_guide(cfg, mode="doctor", failed="busy")
     elif not ok:
         _print_guide(cfg, mode="doctor", failed="config")
+    elif not run_ready:
+        _print_guide(cfg, mode="doctor", failed="run_not_ready")
     else:
         _print_guide(cfg, mode="doctor")
     return 0 if ok else 2

@@ -52,7 +52,7 @@ Defaults: `vault_root` = current Obsidian vault; `source_root` = `<SOURCE_ROOT>`
 
 Never use anyone else's token. Each user owns `<SOURCE_ROOT>/config.json` (`chmod 600`).
 
-1. Mirror config: copy `<SKILL_DIR>/config.template.json` → `<VAULT>/moodle-mirror.json`, fill `mappings` (course code → vault folder; replace the example entries). Set `downloader` to your moodle-dl path (or empty for sync-only mode).
+1. Mirror config: copy `<SKILL_DIR>/config.template.json` → `<VAULT>/moodle-mirror.json`, fill `mappings`: keys are course codes (`LAWS1234`) or, for codeless folders, the literal source dirname (`Public Law Week 1`); value `null` = explicitly ignored. Set `downloader` to your moodle-dl path (or empty for sync-only mode).
 2. Download config: `mkdir -p <SOURCE_ROOT> && cd <SOURCE_ROOT> && moodle-dl --init` (sets `moodle_domain`, `download_course_ids`). Course IDs come from the Moodle course page URL or `mcp_query.py courses`.
 3. Get token via controlled browser (HKU is CAS-only, password API fails):
    login Moodle → visit `https://<domain>/admin/tool/mobile/launch.php?service=moodle_mobile_app&passport=12345&urlscheme=moodledl` → browser shows `ERR_ABORTED` = success → read `moodledl://token=<base64>` from Network → run:
@@ -135,7 +135,7 @@ Next-step picker (use the first that matches):
 | 情况 | 👉 下一步 |
 |---|---|
 | pull 失败 / 无 downloader | 修好 token 与 course_ids 再 `run`；或改用 `sync` 只映射 |
-| UNMAPPED 课号 | 写入 `mappings` 后再 `sync` |
+| UNMAPPED / DUPLICATE / UNRECOGNIZED 课号 | 写入 `mappings`（字面目录名亦可）或置 `null` 忽略后再 `sync`；此前轮次标不完整且不更新成功时间 |
 | conflicted > 0 | 在更新记录里找 `state:conflicts/` 对应备份，对比本地修改 |
 | 本轮有新增/更新 | 在 Obsidian 打开 `99 Moodle Mirror`；需要可搜再说「生成伴生 md」 |
 | 本轮无变化 | 有新课件再 `run`；只重映缓存则 `sync` |

@@ -10,7 +10,8 @@
   "pull_retry_seconds": 30,
   "mappings": {
     "LAWS1234": "Example Course A (LAWS1234)",
-    "COMP1234": "Example Course B (COMP1234)"
+    "COMP1234": "Example Course B (COMP1234)",
+    "Public Law Week 1": null
   },
-  "_comment": "COPY THIS FILE TO YOUR VAULT ROOT as moodle-mirror.json (paths above resolve from the vault root). It is the MIRROR config only. Replace the example mappings with your course codes → vault folder names. The DOWNLOAD config is separate: moodle-sync/config.json belongs to moodle-dl (keys: moodle_domain, moodle_path, download_course_ids, token) and is created by 'moodle-dl --init'. save_token.py writes the token there. Leave downloader empty for sync-only mode (no pull, mirror existing snapshot only)."
+  "_comment": "COPY THIS FILE TO YOUR VAULT ROOT as moodle-mirror.json (paths above resolve from the vault root). It is the MIRROR config only. Mapping keys are course codes (LAWS1234) OR literal source folder names for codeless dirs ('Public Law Week 1'); a null value means explicitly ignored. Unmapped / duplicated / unrecognized courses mark the run incomplete (no success stamp) until mapped or ignored. Replace the examples. The DOWNLOAD config is separate: <SOURCE_ROOT>/config.json belongs to moodle-dl (keys: moodle_domain, moodle_path, download_course_ids, token) and is created by 'moodle-dl --init'. save_token.py writes the token there. Leave downloader empty for sync-only mode (no pull, mirror existing snapshot only)."
 }
