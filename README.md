@@ -4,7 +4,7 @@
   <img src="docs/hero.gif" alt="Moodle course files sync into an organized Obsidian vault" width="100%" />
 </p>
 
-<p align="center"><em>Moodle 课件 → 自动落进 Obsidian · 结构不乱 · 更新不漏</em></p>
+<p align="center"><em>Moodle 课件 → 自动落进 Obsidian · 结构不乱 · 拉取结果如实报告</em></p>
 
 <p align="center">
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="License: MIT"></a>
@@ -57,6 +57,13 @@
 
 ## 30 秒极速上手
 
+先把仓库放到本机并定好两个路径（之后所有命令都可从任意目录复制粘贴执行）：
+```bash
+git clone https://github.com/mixxmax/moodle-to-obsidian <SKILL_DIR>
+export SKILL_DIR=/path/to/moodle-to-obsidian VAULT=/path/to/your/vault
+```
+以下命令里的 `$SKILL_DIR` / `$VAULT` 就指这两个。
+
 ### 1. 安装核心依赖
 ```bash
 pip install moodle-dl python-docx python-pptx
@@ -65,22 +72,23 @@ pip install moodle-dl python-docx python-pptx
 ### 2. 初始化配置与浏览器一次性登录
 ```bash
 # 复制映射配置文件到你的 Obsidian 库根目录
-cp config.template.json /path/to/your/vault/moodle-mirror.json
+cp "$SKILL_DIR/config.template.json" "$VAULT/moodle-mirror.json"
 
 # 在浏览器中登录 Moodle 完成 CAS 认证后保存 Token（以 HKU 为例）
-python3 scripts/save_token.py --config /path/to/your/vault/moodle-sync/config.json --url 'moodledl://token=...'
+python3 "$SKILL_DIR/scripts/save_token.py" --config "$VAULT/moodle-sync/config.json" --url 'moodledl://token=...'
 
-# 自检环境配置与路径连通性
-python3 scripts/mirror.py --config /path/to/your/vault/moodle-mirror.json doctor
+# 自检环境配置与路径连通性（另报告 run READY / NOT READY）
+python3 "$SKILL_DIR/scripts/mirror.py" --config "$VAULT/moodle-mirror.json" doctor
 ```
 
 ### 3. 一键同步进 Obsidian
 ```bash
 # 全流程：拉取最新课件 + 原生映射进 Obsidian 库
-python3 scripts/mirror.py --config /path/to/your/vault/moodle-mirror.json run
+# 拉取判据：ok 才镜像；失败阻断镜像；downloader 版本不在已验证 2.3.x 时显式标未验证
+python3 "$SKILL_DIR/scripts/mirror.py" --config "$VAULT/moodle-mirror.json" run
 
 # 为各课程生成伴生 Markdown（使 Word/PPT 在 Obsidian 内支持全文搜索）
-python3 scripts/to_markdown.py "/path/to/your/vault/<Course Folder>"
+python3 "$SKILL_DIR/scripts/to_markdown.py" "$VAULT/<Course Folder>"
 ```
 
 ### 4. 第一次成功后你会看到什么
@@ -122,7 +130,7 @@ python3 scripts/to_markdown.py "/path/to/your/vault/<Course Folder>"
 
 | 能力 | 一句话说明 | 要不要你盯着 | 对应命令 / 工具 |
 |---|---|---|---|
-| **① 拉取 / 更新** | 从 Moodle 把课件增量下载到本机缓存 | 登录一次后，系统自动完成 | `moodle-dl` 写入 `moodle-sync/` |
+| **① 拉取 / 更新** | 从 Moodle 把课件增量下载到本机缓存；结果分 ok / 失败阻断 / 未验证三档如实报告 | 登录一次后，系统自动完成 | `moodle-dl` 写入 `moodle-sync/` |
 | **② 映射进 Obsidian** | 把下载树原样放进各课 `99 Moodle Mirror/` | 系统自动完成（可完全离线） | `python3 scripts/mirror.py sync` |
 | **①+② 完整同步** | 先联网拉取最新更新，再立即镜像映射进库 | 一键完成 | `python3 scripts/mirror.py run` |
 | **伴生 Markdown** | docx 必转结构化 md；pdf 不动；pptx 抽文字与备注 | 按需运行 | `python3 scripts/to_markdown.py` |
@@ -166,10 +174,10 @@ python3 scripts/to_markdown.py "/path/to/your/vault/<Course Folder>"
 
 ```bash
 # 干跑：确认有 token，不真正请求
-python3 scripts/mcp_query.py --config <vault>/moodle-sync/config.json deadlines
+python3 "$SKILL_DIR/scripts/mcp_query.py" --config "$VAULT/moodle-sync/config.json" deadlines
 
 # 实跑：指向本地 moodle-mcp 仓库
-python3 scripts/mcp_query.py --config <vault>/moodle-sync/config.json briefing \
+python3 "$SKILL_DIR/scripts/mcp_query.py" --config "$VAULT/moodle-sync/config.json" briefing \
   --mcp-dir /path/to/moodle-mcp
 ```
 
@@ -182,7 +190,7 @@ python3 scripts/mcp_query.py --config <vault>/moodle-sync/config.json briefing \
 Word / PPT 在 Obsidian 库内通常无法被全局检索。通过伴生转换引擎可一键生成轻量伴生 `.md`：
 
 ```bash
-python3 scripts/to_markdown.py "<vault>/<Course Folder>"
+python3 "$SKILL_DIR/scripts/to_markdown.py" "$VAULT/<Course Folder>"
 ```
 
 | 格式 | 转换策略 | 呈现效果 |
@@ -259,12 +267,12 @@ python3 scripts/to_markdown.py "<vault>/<Course Folder>"
 
 | 使用场景 | 终端命令 |
 |---|---|
-| **自检配置与依赖** | `python3 scripts/mirror.py --config <vault>/moodle-mirror.json doctor` |
-| **全流程同步 (①+②)** | `python3 scripts/mirror.py --config <vault>/moodle-mirror.json run` |
-| **仅镜像到库 (仅②)** | `python3 scripts/mirror.py --config <vault>/moodle-mirror.json sync` |
-| **查看上轮更新状态** | `python3 scripts/mirror.py --config <vault>/moodle-mirror.json status` |
-| **生成伴生 Markdown** | `python3 scripts/to_markdown.py "<vault>/<Course Folder>"` |
-| **（可选）mcp 干跑** | `python3 scripts/mcp_query.py --config <vault>/moodle-sync/config.json deadlines` |
+| **自检配置与依赖** | `python3 "$SKILL_DIR/scripts/mirror.py" --config "$VAULT/moodle-mirror.json" doctor` |
+| **全流程同步 (①+②)** | `python3 "$SKILL_DIR/scripts/mirror.py" --config "$VAULT/moodle-mirror.json" run` |
+| **仅镜像到库 (仅②)** | `python3 "$SKILL_DIR/scripts/mirror.py" --config "$VAULT/moodle-mirror.json" sync` |
+| **查看上轮更新状态** | `python3 "$SKILL_DIR/scripts/mirror.py" --config "$VAULT/moodle-mirror.json" status` |
+| **生成伴生 Markdown** | `python3 "$SKILL_DIR/scripts/to_markdown.py" "$VAULT/<Course Folder>"` |
+| **（可选）mcp 干跑** | `python3 "$SKILL_DIR/scripts/mcp_query.py" --config "$VAULT/moodle-sync/config.json" deadlines` |
 | **（可选）mcp 实跑** | `… briefing --mcp-dir /path/to/moodle-mcp`（需已安装上游） |
 
 - 登录与 Token 获取指南：[`references/moodle-login.md`](references/moodle-login.md)

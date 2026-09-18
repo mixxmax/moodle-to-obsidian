@@ -5,7 +5,7 @@ Upstream: https://github.com/loyaniu/moodle-mcp. Same user token from
 
 ## Modes
 
-- Dry-run (default): `python3 scripts/mcp_query.py --config moodle-sync/config.json deadlines`
+- Dry-run (default): `python3 "<SKILL_DIR>/scripts/mcp_query.py" --config <VAULT>/moodle-sync/config.json deadlines`
   verifies the token exists and prints the exact planned call. Nothing executes.
 - Execute: add `--mcp-dir /path/to/moodle-mcp`. The shim sets `MOODLE_URL` /
   `MOODLE_TOKEN` from your config (redacted on screen), imports

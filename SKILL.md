@@ -7,7 +7,15 @@ description: "从 Moodle 拉取/下载课件并按课程文件夹整理，也可
 
 Lightweight pipeline: exact mirror, no LLM in the pipe, condense afterwards.
 
-**Product promise:** 课程自动落地，结构不乱，更新不漏。系统只组织、不解读。
+**Product promise:** 课程自动落地，结构不乱；拉取完整性按判据如实报告（ok / 失败阻断 / 未验证），不谎报更新不漏。系统只组织、不解读。
+
+## Path convention (read this first)
+
+- `<SKILL_DIR>` = the directory that contains this SKILL.md (scripts + template live here).
+- `<VAULT>` = the absolute path of the user's Obsidian vault.
+- Every command below is copy-paste runnable from **any** working directory:
+  script paths always start with `<SKILL_DIR>/scripts/`, configs always use
+  `<VAULT>/...` absolute paths. Never rely on "currently cd'ed where".
 
 ## Step 1: Detect environment and auth state
 
@@ -16,9 +24,9 @@ Run detection first, then follow the decision tree:
 ```
 !`command -v moodle-dl && echo MOODLEDL_OK || echo MOODLEDL_MISSING`
 !`python3 -c "import docx; print('DOCX_OK')" 2>/dev/null || echo DOCX_MISSING`
-!`ls moodle-mirror.json 2>/dev/null || echo NO_MIRROR_CONFIG`
-!`ls moodle-sync/config.json 2>/dev/null || echo NO_DL_CONFIG`
-!`ls moodle-sync/running.lock 2>/dev/null && echo LOCKED || echo UNLOCKED`
+!`ls <VAULT>/moodle-mirror.json 2>/dev/null || echo NO_MIRROR_CONFIG`
+!`ls <VAULT>/moodle-sync/config.json 2>/dev/null || echo NO_DL_CONFIG`
+!`ls <VAULT>/moodle-sync/running.lock 2>/dev/null && echo LOCKED || echo UNLOCKED`
 ```
 
 | Observation | Path |
@@ -41,31 +49,38 @@ Defaults: `vault_root` = current Obsidian vault; `source_root` = `<vault>/moodle
 
 Never use anyone else's token. Each user owns `moodle-sync/config.json` (`chmod 600`).
 
-1. Mirror config: copy `config.template.json` → `<vault>/moodle-mirror.json`, fill `mappings` (course code → vault folder; replace the example entries). Set `downloader` to your moodle-dl path (or empty for sync-only mode).
-2. Download config: `mkdir -p moodle-sync && cd moodle-sync && moodle-dl --init` (creates the dir if missing; sets `moodle_domain`, `download_course_ids`). Course IDs come from the Moodle course page URL or `mcp_query.py courses`.
+1. Mirror config: copy `<SKILL_DIR>/config.template.json` → `<VAULT>/moodle-mirror.json`, fill `mappings` (course code → vault folder; replace the example entries). Set `downloader` to your moodle-dl path (or empty for sync-only mode).
+2. Download config: `mkdir -p <VAULT>/moodle-sync && cd <VAULT>/moodle-sync && moodle-dl --init` (sets `moodle_domain`, `download_course_ids`). Course IDs come from the Moodle course page URL or `mcp_query.py courses`.
 3. Get token via controlled browser (HKU is CAS-only, password API fails):
    login Moodle → visit `https://<domain>/admin/tool/mobile/launch.php?service=moodle_mobile_app&passport=12345&urlscheme=moodledl` → browser shows `ERR_ABORTED` = success → read `moodledl://token=<base64>` from Network → run:
-   `python3 scripts/save_token.py --config moodle-sync/config.json --url 'moodledl://token=...'`
+   `python3 "<SKILL_DIR>/scripts/save_token.py" --config <VAULT>/moodle-sync/config.json --url 'moodledl://token=...'`
    (writes only `token`, preserves the rest; never prints it).
    Detail: `references/moodle-login.md`.
-4. `python3 scripts/mirror.py --config moodle-mirror.json doctor`
+4. `python3 "<SKILL_DIR>/scripts/mirror.py" --config <VAULT>/moodle-mirror.json doctor`
 
-Gate: `doctor` must print OK before any sync. `run` additionally needs `downloader` set + moodle-dl configured; otherwise use `sync`.
+Gate: `doctor` must report sync ready before any sync. It separately reports
+`run READY` / `run NOT READY` (downloader + dl-config preconditions); a NOT READY
+run means use `sync` until fixed.
 
 ## Step 3: Mirror exactly (no restructuring)
 
 ```bash
-python3 scripts/mirror.py --config moodle-mirror.json run    # pull (needs downloader) + mirror
-python3 scripts/mirror.py --config moodle-mirror.json sync   # mirror existing snapshot only
-python3 scripts/mirror.py --config moodle-mirror.json status
+python3 "<SKILL_DIR>/scripts/mirror.py" --config <VAULT>/moodle-mirror.json run    # pull (needs downloader) + mirror
+python3 "<SKILL_DIR>/scripts/mirror.py" --config <VAULT>/moodle-mirror.json sync   # mirror existing snapshot only
+python3 "<SKILL_DIR>/scripts/mirror.py" --config <VAULT>/moodle-mirror.json status
 ```
+
+Pull verdicts (printed, never silent): `ok` → mirror proceeds; `failed`
+(rc != 0 or failure signals in pull output) → mirror blocked, nothing stamped;
+`unverified` (downloader version outside pinned moodle-dl 2.3.x) → mirror
+proceeds with an explicit completeness caveat in terminal + changelog.
 
 Rules: native tree kept, add/update in place, withdrawn kept and marked, local edits backed up to `*.local-edit.bak`, every run appends changelog. Never let LLM rename or reorganise this layer.
 
 ## Step 4: Generate md companions (docx must, pdf must-not)
 
 ```bash
-python3 scripts/to_markdown.py "<vault>/<Course Folder>"
+python3 "<SKILL_DIR>/scripts/to_markdown.py" "<VAULT>/<Course Folder>"
 ```
 
 Rules: one `.md` per source alongside it, frontmatter records source, top links back; docx headings/tables preserved (link-only stub if python-docx missing); pptx per-slide sections always carry a downgrade warning; PDF untouched (Obsidian renders it); link hygiene: label strips `[]`, target percent-encoded. Detail: `references/companion-rules.md`.
@@ -75,13 +90,13 @@ Rules: one `.md` per source alongside it, frontmatter records source, top links 
 Shares the same user token from `moodle-sync/config.json`, never stores a second copy:
 
 ```
-!`python3 scripts/mcp_query.py --config moodle-sync/config.json deadlines 2>/dev/null || echo MCP_FAILED`
+!`python3 "<SKILL_DIR>/scripts/mcp_query.py" --config <VAULT>/moodle-sync/config.json deadlines 2>/dev/null || echo MCP_FAILED`
 ```
 
 Without `--mcp-dir` the shim is a dry-run planner (verifies token, prints the exact call). With `--mcp-dir /path/to/moodle-mcp` it executes and prints JSON:
 
 ```bash
-python3 scripts/mcp_query.py --config moodle-sync/config.json briefing --mcp-dir /path/to/moodle-mcp
+python3 "<SKILL_DIR>/scripts/mcp_query.py" --config <VAULT>/moodle-sync/config.json briefing --mcp-dir /path/to/moodle-mcp
 ```
 
 Tools: `assignments/deadlines/grades/progress/health/dashboard/briefing/courses/...`. Only on demand, never daemonised. Detail: `references/moodle-mcp.md`.

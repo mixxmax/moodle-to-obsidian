@@ -6,7 +6,7 @@ Generic course codes (e.g. PCLL8010, LAWS1234, COMP1111), relative paths only.
 No LLM, no secrets in logs. Per-user config, chmod 600 recommended.
 """
 from __future__ import annotations
-import argparse, filecmp, fcntl, json, os, re, shutil, subprocess, sys, tempfile, time
+import argparse, filecmp, fcntl, json, os, re, shutil, stat, subprocess, sys, tempfile, time
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
@@ -19,6 +19,26 @@ MANIFEST_VERSION = 1
 CONTROL_FILES = {".DS_Store", "desktop.ini", "Thumbs.db"}
 LOCAL_EDIT_SUFFIX = ".local-edit.bak"
 CODE_RE = re.compile(r"([A-Z]{2,10}\d{3,}[A-Z]?)")
+
+# Pull-outcome signals, verified against moodle-dl 2.3.x default-verbosity output.
+# - "is no longer available online": moodle_service.py WARNING (swallowed by -q)
+# - "Error while trying to download files": console notify_about_failed_downloads
+# - "The following error occurred during execution": notify_about_error
+# - "Traceback ...": uncaught exception (usually also rc != 0)
+PULL_FAILURE_SIGNALS = (
+    "is no longer available online",
+    "Error while trying to download files",
+    "The following error occurred during execution",
+    "Traceback (most recent call last)",
+)
+SUPPORTED_DL = (2, 3)  # (major, minor) whose output the signals above are pinned to
+_DL_VERSION_RE = re.compile(r"moodle-dl\s+(\d+)\.(\d+)(?:\.(\d+))?")
+_ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
+_SECRET_QUERY = re.compile(r"(?i)((?:wstoken|token|privatetoken|password|cookie|autologinkey)=)[^&\s]+")
+_SECRET_ASSIGN = re.compile(
+    r"(?i)\b(wstoken|token|privatetoken|password|cookie|autologinkey)\b"
+    r"(\s*[:=]\s*)(\"[^\"]*\"|'[^']*'|[^\s,;]+)"
+)
 
 class ConfigError(ValueError): pass
 class SyncBusyError(RuntimeError): pass
@@ -288,19 +308,25 @@ def _next_hint(cfg: Config, result: dict | None = None, *, failed: str | None = 
         return "配置齐全后可 sync（只映射）；若要联网拉取，先填 downloader 再 run"
     return "可执行 run（①拉取+②映射）或 sync（只②）"
 
-def _print_guide(cfg: Config, *, mode: str, result: dict | None = None, failed: str | None = None) -> None:
+def _print_guide(cfg: Config, *, mode: str, result: dict | None = None, failed: str | None = None,
+                 pull_note: str | None = None) -> None:
     """Human-facing where/what-next block (same shape for CLI and agents)."""
     if mode == "run":
-        stage = "①拉取 + ②映射" if not failed else "①拉取（失败，镜像未改）"
+        if failed:
+            stage = "①拉取（失败，镜像未改）"
+        elif pull_note:
+            stage = "①拉取（完整性未验证）+ ②映射"
+        else:
+            stage = "①拉取 + ②映射"
     elif mode == "sync":
         stage = "②映射"
     elif mode == "doctor":
         stage = "自检 doctor"
     else:
         stage = mode
-    status = "失败" if failed else "成功"
+    status = "失败" if failed else ("映射成功（拉取未验证）" if pull_note else "成功")
     print("")
-    print(f"{'❌' if failed else '✅'} 本轮：{stage} — {status}")
+    print(f"{'❌' if failed else ('⚠️' if pull_note else '✅')} 本轮：{stage} — {status}")
     print(f"📁 缓存（①）：{cfg.source_root}")
     print(f"📁 笔记库根：{cfg.vault_root}")
     print(f"📝 更新记录：{cfg.changelog}")
@@ -324,20 +350,80 @@ def _print_guide(cfg: Config, *, mode: str, result: dict | None = None, failed: 
             print(f"   · DUPLICATE {d}")
     print(f"👉 下一步：{_next_hint(cfg, result, failed=failed)}")
 
+def _redact(text: str) -> str:
+    text = _SECRET_QUERY.sub(r"\1[REDACTED]", text)
+    return _SECRET_ASSIGN.sub(r"\1\2[REDACTED]", text)
+
+
+def _dl_version(downloader: Path):
+    """Probe `downloader --version` -> (major, minor, patch...) or None if unparseable."""
+    try:
+        c = subprocess.run([str(downloader), "--version"], capture_output=True,
+                           text=True, timeout=60)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    m = _DL_VERSION_RE.search((c.stdout or "") + "\n" + (c.stderr or ""))
+    if not m:
+        return None
+    return tuple(int(g) for g in m.groups() if g is not None)
+
+
+def _dl_config_status(cfg: Config) -> tuple[bool, list[str]]:
+    """Check moodle-dl's own config (<source_root>/config.json) without echoing values.
+
+    Returns (ready, reasons). A loose file mode is a warning reason only when
+    it is the sole problem it still blocks run-readiness: credentials must not
+    sit world-readable."""
+    p = cfg.source_root / "config.json"
+    if not p.is_file():
+        return False, [f"missing {p} (run 'moodle-dl --init' inside {cfg.source_root})"]
+    try:
+        raw = json.loads(p.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False, [f"unreadable JSON: {p} (fix or re-run 'moodle-dl --init'"]
+    if not isinstance(raw, dict):
+        return False, [f"config root must be an object: {p}"]
+    reasons = []
+    for key in ("moodle_domain", "download_course_ids", "token"):
+        if not raw.get(key):
+            reasons.append(f"empty {key} in {p}")
+    try:
+        if stat.S_IMODE(p.stat().st_mode) != 0o600:
+            reasons.append(f"{p} is not mode 600 (run: chmod 600 {p})")
+    except OSError:
+        reasons.append(f"cannot stat {p}")
+    return (not reasons), reasons
+
+
 def _doctor(cfg: Config) -> int:
     ok = True
     for good, msg in [(cfg.source_root.is_dir(), f"source_root: {cfg.source_root}"),
                       (cfg.vault_root.is_dir(), f"vault_root: {cfg.vault_root}"),
                       (bool(cfg.mappings), f"mappings: {len(cfg.mappings)}")]:
         print(f"{'OK' if good else 'ISSUE'}  {msg}"); ok &= good
-    if cfg.downloader:
-        exe = cfg.downloader.is_file() and os.access(cfg.downloader, os.X_OK)
-        print(f"{'OK' if exe else 'ISSUE'}  downloader: {cfg.downloader}"); ok &= exe
-    else: print("OK  downloader: not configured (sync-only mode)")
     busy = (cfg.source_root / "running.lock").exists()
     print(f"{'BUSY' if busy else 'OK'}  download lock")
     if busy:
         ok = False
+    print(f"{'OK' if ok else 'ISSUE'}  sync ready" if ok else "ISSUE  sync NOT ready")
+    # --- run readiness (informational; never affects the sync verdict) ---
+    run_ready, run_reasons = True, []
+    if cfg.downloader is None:
+        run_ready = False
+        run_reasons = ["sync-only mode: downloader not configured"]
+    elif not (cfg.downloader.is_file() and os.access(cfg.downloader, os.X_OK)):
+        run_ready = False
+        run_reasons = [f"downloader not found/executable: {cfg.downloader}"]
+    else:
+        print(f"OK  downloader: {cfg.downloader}")
+        dl_ok, dl_reasons = _dl_config_status(cfg)
+        if not dl_ok:
+            run_ready = False
+            run_reasons = dl_reasons
+    print(f"{'OK  run READY' if run_ready else 'ISSUE  run NOT READY'}")
+    for r in run_reasons:
+        print(f"   · {r}")
+    if busy:
         _print_guide(cfg, mode="doctor", failed="busy")
     elif not ok:
         _print_guide(cfg, mode="doctor", failed="config")
@@ -345,21 +431,58 @@ def _doctor(cfg: Config) -> int:
         _print_guide(cfg, mode="doctor")
     return 0 if ok else 2
 
-def _pull(cfg: Config) -> int:
+def _pull(cfg: Config) -> tuple[int, str, str]:
+    """Run the downloader. Returns (exit_code, verdict, note).
+
+    verdict is one of:
+      ok         rc 0, no failure signals, downloader version pinned (2.3.x)
+      failed     rc != 0, or rc 0 with failure signals -> caller must NOT mirror
+      unverified rc 0 and clean, but downloader version unknown -> mirror may
+                 proceed only with an explicit completeness caveat
+    Runs WITHOUT -q: moodle-dl 2.3.x demotes course-gone/download-failure
+    signals to WARNING/INFO, which -q would swallow while rc stays 0.
+    """
     if cfg.downloader is None:
         print("mirror.py: no downloader configured (sync-only mode).", file=sys.stderr)
         print("To enable 'run': set 'downloader' to your moodle-dl binary AND configure", file=sys.stderr)
         print("moodle-dl itself (moodle-sync/config.json via 'moodle-dl --init': moodle_domain,", file=sys.stderr)
         print("download_course_ids, token). Or use 'sync' to mirror an existing snapshot.", file=sys.stderr)
-        return 2
+        return 2, "failed", "no_downloader"
+    ver = _dl_version(cfg.downloader)
+    trusted = ver is not None and tuple(ver[:2]) == SUPPORTED_DL
+    ver_note = (f"downloader version {'.'.join(str(v) for v in ver)}" if ver is not None
+                else "downloader version unknown (expected moodle-dl 2.3.x)")
+    rc, output = 1, ""
     for a in range(1, cfg.pull_retries + 1):
-        c = subprocess.run([str(cfg.downloader), "-q"], cwd=cfg.source_root,
-                           capture_output=True, text=True)
-        out = re.sub(r"(?i)((?:token|password|cookie)=)[^&\s]+", r"\1[REDACTED]", (c.stdout or "") + (c.stderr or ""))
-        if out: sys.stderr.write(out)
-        if c.returncode == 0: return 0
-        if a < cfg.pull_retries: time.sleep(cfg.pull_retry_seconds)
-    return c.returncode or 1
+        try:
+            c = subprocess.run([str(cfg.downloader)], cwd=cfg.source_root,
+                               capture_output=True, text=True, timeout=600)
+        except (OSError, subprocess.SubprocessError) as e:
+            print(f"mirror.py: cannot execute downloader: {e}", file=sys.stderr)
+            return 3, "failed", "downloader not executable"
+        output = _ANSI_RE.sub("", (c.stdout or "") + (c.stderr or ""))
+        output = _redact(output)
+        if output.strip():
+            sys.stderr.write(output if output.endswith("\n") else output + "\n")
+        rc = c.returncode or 0
+        if rc == 0:
+            break
+        if "already running" in (c.stderr or "").lower():
+            print("Another moodle-dl instance is already running.", file=sys.stderr)
+            return 3, "failed", "downloader busy"
+        if a < cfg.pull_retries:
+            print(f"Pull attempt {a} failed; retrying…", file=sys.stderr)
+            time.sleep(cfg.pull_retry_seconds)
+    if rc != 0:
+        return rc, "failed", f"downloader exit {rc}"
+    hits = [s for s in PULL_FAILURE_SIGNALS if s in output]
+    if hits:
+        print(f"mirror.py: pull reported failures ({'; '.join(hits)}); mirror unchanged.",
+              file=sys.stderr)
+        return 1, "failed", f"failure signals: {'; '.join(hits)}"
+    if not trusted:
+        return 0, "unverified", ver_note + "; signal patterns pinned to moodle-dl 2.3.x"
+    return 0, "ok", ver_note
 
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(prog="mirror.py"); ap.add_argument("--config", required=True, type=Path)
@@ -388,18 +511,26 @@ def main(argv=None) -> int:
                 _print_guide(cfg, mode="sync", result=d)
             return 0
         mode = "run" if a.cmd == "run" else "sync"
+        pull_note = None
         if a.cmd == "run":
-            rc = _pull(cfg)
-            if rc != 0:
+            rc, verdict, note = _pull(cfg)
+            if verdict == "failed":
                 print("pull failed; mirror unchanged", file=sys.stderr)
                 fail = "no_downloader" if cfg.downloader is None else "pull"
                 _print_guide(cfg, mode="run", failed=fail)
-                return rc
+                return rc or 1
+            if verdict == "unverified":
+                pull_note = note
+                print(f"⚠️ pull ran but completeness UNVERIFIED: {note}; "
+                      "mirror proceeds, verify new files on Moodle manually.", file=sys.stderr)
         r = synchronize(cfg).as_dict()
         print(f"mirror done: +{r['added']} added ~{r['updated']} updated, {r['restored']} restored, "
               f"{r['withdrawn']} withdrawn, {r['conflicted']} conflicted, "
               f"{r['adopted']} adopted, {r['unchanged']} unchanged")
-        _print_guide(cfg, mode=mode, result=r)
+        if pull_note:
+            clog = cfg.changelog.read_text(encoding="utf-8")
+            _atext(cfg.changelog, clog.rstrip() + f"\n- ⚠️ pull completeness UNVERIFIED: {pull_note}\n")
+        _print_guide(cfg, mode=mode, result=r, pull_note=pull_note)
         return 0
     except (ConfigError, RuntimeError, OSError) as e:
         print(f"mirror.py: {e}", file=sys.stderr)

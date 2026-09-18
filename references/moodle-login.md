@@ -24,9 +24,9 @@ Two files — do not merge them:
    `https://moodle.hku.hk/admin/tool/mobile/launch.php?service=moodle_mobile_app&passport=12345&urlscheme=moodledl`
 6. Chrome reports `ERR_ABORTED` — this IS the success signal (custom scheme).
 7. Open DevTools → Network, find the `moodledl://token=<base64>` request.
-8. Run (token never printed back):
-   `python3 scripts/save_token.py --config moodle-sync/config.json --url 'moodledl://token=<base64>'`
-9. `python3 scripts/mirror.py --config moodle-mirror.json doctor`
+8. Run (from any directory; `<SKILL_DIR>` = skill repo dir, `<VAULT>` = vault root):
+   `python3 "<SKILL_DIR>/scripts/save_token.py" --config <VAULT>/moodle-sync/config.json --url 'moodledl://token=<base64>'`
+9. `python3 "<SKILL_DIR>/scripts/mirror.py" --config <VAULT>/moodle-mirror.json doctor`
 
 ## Rules
 
