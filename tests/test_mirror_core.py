@@ -84,6 +84,14 @@ def test_unmapped_course_reported(mirror, workdir):
     assert "UNMAPPED" in out
 
 
+def test_empty_section_dirs_mirrored(mirror, workdir):
+    (workdir["cache"] / "COMP1111 Week 1 [2026]" / "Empty Section").mkdir(parents=True)
+    cfg = write_config(workdir["vault"] / "moodle-mirror.json")
+    _sync(mirror, cfg)
+    assert (workdir["vault"] / "Course COMP1111" / "99 Moodle Mirror"
+            / "Empty Section").is_dir()
+
+
 def test_withdraw_then_restore(mirror, workdir):
     cfg = write_config(workdir["vault"] / "moodle-mirror.json")
     _sync(mirror, cfg)

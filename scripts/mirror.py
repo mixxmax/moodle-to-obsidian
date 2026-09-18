@@ -445,6 +445,21 @@ def synchronize(cfg: Config, pull_verdict: str = "n/a") -> SyncResult:
             srcs = sorted((x for x in src_course.rglob("*") if x.is_file() and not x.is_symlink()
                            and x.name not in CONTROL_FILES),
                           key=lambda x: x.relative_to(src_course).as_posix().casefold())
+            # Empty section folders carry no files but are part of the native
+            # tree: recreate them so the mirror is structurally complete.
+            # (A folder holding only control files/symlinks counts as empty:
+            # neither is ever mirrored as content.)
+            for d_empty in sorted(src_course.rglob("*")):
+                if not (d_empty.is_dir() and not d_empty.is_symlink()):
+                    continue
+                try:
+                    children = list(d_empty.iterdir())
+                except OSError:
+                    continue
+                if not any(p.name not in CONTROL_FILES and not p.is_symlink()
+                           for p in children):
+                    (mroot / d_empty.relative_to(src_course)).mkdir(
+                        parents=True, exist_ok=True)
             for s in srcs:
                 rel = s.relative_to(src_course).as_posix()
                 if Path(rel).is_absolute() or ".." in Path(rel).parts:
