@@ -42,7 +42,9 @@ def test_manifest_nonobject_shapes_error_loudly(mirror, workdir):
     cfg = write_config(workdir["vault"] / "moodle-mirror.json")
     _sync(mirror, cfg)
     for bad in ([], None, {"version": 1, "courses": {"C": []}},
-                {"version": 1, "courses": {"C": {"files": []}}}):
+                {"version": 1, "courses": {"C": {"files": []}}},
+                {"version": 1, "courses": {"C": {"files": {"a.pdf": []}}}},
+                {"version": 1, "courses": {"C": {"files": {"a.pdf": "x"}}}}):
         (workdir["state"] / "manifest.json").write_text(
             json.dumps(bad), encoding="utf-8")
         rc, out, err = run_cli(mirror, "--config", str(cfg), "sync")

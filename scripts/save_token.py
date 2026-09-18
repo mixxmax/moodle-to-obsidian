@@ -9,7 +9,7 @@ Contract (deliberate): the third segment (privatetoken, needed for
 cookie-based downloads) is NOT written by this script. Get the complete
 credential via the native flow instead:
 
-    cd <vault>/moodle-sync && moodle-dl --init --sso
+    cd <SOURCE_ROOT> && moodle-dl --init --sso
     # or, to rotate only the token:
     moodle-dl --new-token --sso
 

@@ -386,6 +386,13 @@ def _manifest(p: Path):
                 "(need object with object-valued 'files'). Recovery: move it aside "
                 f"(e.g. mv {p.name} {p.name}.bad) and re-run sync; mirrored files "
                 "will be adopted, never deleted.")
+        for rel, rec in entry["files"].items():
+            if not isinstance(rec, dict):
+                raise MirrorStateError(
+                    f"manifest file record {rel!r} of {code!r} is malformed in {p} "
+                    f"(need object, got {type(rec).__name__}). Recovery: move it aside "
+                    f"(e.g. mv {p.name} {p.name}.bad) and re-run sync; mirrored files "
+                    "will be adopted, never deleted.")
     return m, None
 
 def _resolve_identity(cfg: Config, code: str | None, dirname: str):

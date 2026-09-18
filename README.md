@@ -173,7 +173,7 @@ python3 "$SKILL_DIR/scripts/to_markdown.py" "$VAULT/<Course Folder>"
 
 **①② 镜像是本产品的主业。** 作业 ddl、成绩、每日 briefing 来自开源上游 [loyaniu/moodle-mcp](https://github.com/loyaniu/moodle-mcp)，本仓库只提供 `scripts/mcp_query.py` 做**同凭证、按需调用**的薄封装——未安装上游时，**不影响拉取与映射**。
 
-- 与下载器共用 `moodle-sync/config.json` 里的 token，不另开账号  
+- 与下载器共用 `<SOURCE_ROOT>/config.json` 里的 token，不另开账号  
 - 只读、按需、非常驻；结果默认是快照说明，不自动写进 vault  
 - 实跑需本地 checkout 上游，并用其可用的 Python 环境（详见上游文档）
 
