@@ -302,6 +302,20 @@ references/              # 登录 · 伴生 · mcp 集成说明 · 五原则 · 
 docs/hero.gif            # README 演示头图
 ```
 
+## 版本历史
+
+### v1.0.0（2026-09-19）——诚实化大修
+
+这一轮把“看起来成功 Assembly”全部改成了如实报告：
+
+- **拉取判据**：`run` 不再只看退出码，moodle-dl 的失败信号（课程不可用、下载失败）会阻断镜像；downloader 版本不在已验证 2.3.x 时显式标“未验证”；缺下载配置直接失败，不碰镜像。
+- **课程身份**：映射键支持课程代码或字面目录名（无代码目录不再静默消失），`null` = 显式忽略；未映射/重复/未识别/消失的课程标 `incomplete`，成功时间戳冻结。
+- **状态可恢复**：损坏的 manifest 自动留底重建（adopted 全链路可见）；`last-run.json` 状态分 `success / recovered / incomplete / unverified` 四档机读。
+- **伴生 md 时效**：指纹驱动刷新，源变自动更新，用户改过冲突保留，手写同名文件永不动，旧版一键认领。
+- **工程底座**：69 个测试、`requirements.txt` 版本钉、CI 矩阵、异常分类指引。
+
+完整清单见 [`CHANGELOG.md`](CHANGELOG.md)。
+
 ---
 
 ## License
